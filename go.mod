@@ -1,6 +1,6 @@
 module vorfahrt
 
-go 1.27.3
+go 1.21
 
 require (
 	github.com/emersion/go-msgauth v0.7.0
