@@ -1,0 +1,6 @@
+testbuild
+_testdata/
+data/
+data.db
+*.dkim.key
+.env

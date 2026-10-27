@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Vorfahrt</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        .section { margin-bottom: 40px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+        th { background: #eee; }
+        input { padding: 5px; margin-right: 5px; }
+        button { padding: 5px 10px; cursor: pointer; }
+        .status-ok { color: green; font-weight: bold; }
+        .status-missing { color: red; font-weight: bold; }
+        .dns-instructions { margin-top: 10px; padding: 10px; background: #f9f9f9; border: 1px solid #ddd; display: none; }
+        .dns-instructions pre { white-space: pre-wrap; word-break: break-all; margin: 5px 0 0 0; }
+    </style>
+</head>
+<body>
+    <h1>Vorfahrt - Simple Queueing SMTP</h1>
+
+    <div class="section">
+        <h2>Valid Sender Domains</h2>
+        <table id="domains-table">
+            <thead>
+                <tr>
+                    <th>Domain</th>
+                    <th>SPF</th>
+                    <th>DKIM</th>
+                    <th>DMARC</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <div id="dns-instructions-container" class="dns-instructions"></div>
+    </div>
+
+    <div class="section">
+        <h2>Sender Accounts</h2>
+        <div>
+            <input type="text" id="username" placeholder="Username">
+            <input type="password" id="password" placeholder="Password">
+            <button onclick="addAccount()">Add Account</button>
+        </div>
+        <table id="accounts-table">
+            <thead><tr><th>ID</th><th>Username</th><th>Action</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Queue</h2>
+        <button onclick="loadMessages()">Refresh</button>
+        <table id="queue-table">
+            <thead><tr><th>ID</th><th>From</th><th>To</th><th>Status</th><th>Attempts</th><th>Error</th><th>Date</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <script>
+        async function loadAccounts() {
+            const res = await fetch('/api/accounts');
+            const data = await res.json();
+            const tbody = document.querySelector('#accounts-table tbody');
+            tbody.innerHTML = '';
+            for (let acc of data) {
+                tbody.innerHTML += `<tr>
+                    <td>${acc.id}</td>
+                    <td>${acc.username}</td>
+                    <td><button onclick="deleteAccount(${acc.id})">Delete</button></td>
+                </tr>`;
+            }
+        }
+
+        async function addAccount() {
+            const u = document.getElementById('username').value;
+            const p = document.getElementById('password').value;
+            await fetch('/api/accounts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: u, password: p })
+            });
+            loadAccounts();
+        }
+
+        async function deleteAccount(id) {
+            await fetch('/api/accounts/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id })
+            });
+            loadAccounts();
+        }
+
+        async function loadMessages() {
+            const res = await fetch('/api/messages');
+            const data = await res.json();
+            const tbody = document.querySelector('#queue-table tbody');
+            tbody.innerHTML = '';
+            for (let msg of data) {
+                tbody.innerHTML += `<tr>
+                    <td>${msg.id}</td>
+                    <td>${msg.sender}</td>
+                    <td>${msg.recipient}</td>
+                    <td>${msg.status}</td>
+                    <td>${msg.attempts || 0}</td>
+                    <td>${msg.error}</td>
+                    <td>${new Date(msg.created_at).toLocaleString()}</td>
+                </tr>`;
+            }
+        }
+
+        async function loadDomains() {
+            const res = await fetch('/api/domains');
+            const data = await res.json();
+            const tbody = document.querySelector('#domains-table tbody');
+            tbody.innerHTML = '';
+            
+            if (data && data.length > 0) {
+                for (let d of data) {
+                    const spfStatus = d.spf_found ? '<span class="status-ok">Found</span>' : '<span class="status-missing">Missing</span>';
+                    const dkimStatus = d.dkim_found ? '<span class="status-ok">Found</span>' : '<span class="status-missing">Missing</span>';
+                    const dmarcStatus = d.dmarc_found ? '<span class="status-ok">Found</span>' : '<span class="status-missing">Missing</span>';
+
+                    // Convert to base64 or stringify safely to pass into inline function
+                    const domainJson = encodeURIComponent(JSON.stringify(d));
+
+                    tbody.innerHTML += `<tr>
+                        <td>${d.domain}</td>
+                        <td>${spfStatus}</td>
+                        <td>${dkimStatus}</td>
+                        <td>${dmarcStatus}</td>
+                        <td><button onclick="showInstructions('${domainJson}')">DNS Setup</button></td>
+                    </tr>`;
+                }
+            } else {
+                tbody.innerHTML = '<tr><td colspan="5"><i>No domains found (ACME_FILE not set or empty)</i></td></tr>';
+            }
+        }
+
+        function showInstructions(encodedData) {
+            const d = JSON.parse(decodeURIComponent(encodedData));
+            const container = document.getElementById('dns-instructions-container');
+            container.style.display = 'block';
+            
+            container.innerHTML = `
+                <h3>DNS Instructions for ${d.domain}</h3>
+                <p>To ensure high deliverability and avoid spam filters, add the following TXT records to your DNS provider:</p>
+                
+                <h4>1. SPF</h4>
+                <p>Add a TXT record for <b>@</b> (or empty name):</p>
+                <pre>v=spf1 mx -all</pre>
+
+                <h4>2. DKIM</h4>
+                <p>Add a TXT record for <b>${d.dkim_name}</b>:</p>
+                <pre>${d.dkim_expected}</pre>
+
+                <h4>3. DMARC</h4>
+                <p>Add a TXT record for <b>_dmarc</b>:</p>
+                <pre>v=DMARC1; p=none;</pre>
+                
+                <br>
+                <button onclick="document.getElementById('dns-instructions-container').style.display='none'">Close</button>
+            `;
+        }
+
+        loadAccounts();
+        loadMessages();
+        loadDomains();
+        setInterval(loadMessages, 5000);
+    </script>
+</body>
+</html>

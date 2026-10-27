@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:v2.10
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=youremail@example.com"
+      - "--certificatesresolvers.myresolver.acme.storage=/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./acme.json:/acme.json"
+    restart: unless-stopped
+
+  vorfahrt:
+    build: .
+    environment:
+      # Use the mounted acme.json for TLS certs (and valid sender domains)
+      - ACME_FILE=/data/acme.json
+      # Define credentials for the Web UI (optional)
+      - WEB_USERNAME=admin
+      - WEB_PASSWORD=secret
+      # Automatically generate DKIM key if not present and use it
+      - DKIM_KEY_FILE=/data/dkim.key
+      - DKIM_SELECTOR=mail
+      # Allow incoming TLS on SMTP (if implicit TLS is desired instead of STARTTLS)
+      # - SMTP_IMPLICIT_TLS=true
+    ports:
+      - "25:25"      # Expose SMTP publicly to receive mail (if you want this server to also accept external mail)
+      - "8080:8080"  # Web UI port
+    volumes:
+      # Share acme.json from Traefik
+      - "./acme.json:/data/acme.json:ro"
+      # Persist DB and DKIM key
+      - "./data:/data"
+    labels:
+      - "traefik.enable=true"
+      # Route external traffic to the UI via Traefik (optional)
+      - "traefik.http.routers.vorfahrt.rule=Host(`mail.example.com`)"
+      - "traefik.http.routers.vorfahrt.entrypoints=websecure"
+      - "traefik.http.routers.vorfahrt.tls.certresolver=myresolver"
+      - "traefik.http.services.vorfahrt.loadbalancer.server.port=8080"
+    restart: unless-stopped
