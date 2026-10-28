@@ -43,6 +43,14 @@ th {
     background: #eee;
 }
 
+.clickable-row {
+    cursor: pointer;
+}
+
+.clickable-row:hover {
+    background-color: #f7f9fa;
+}
+
 /* Form Elements & Buttons */
 input, select {
     padding: 5px;
@@ -69,29 +77,26 @@ button {
     margin-bottom: 10px;
 }
 
-/* Status Indicators */
-.status-ok {
-    color: green;
+/* Status States (Text & Badges) */
+.status-ok                                     { color: #047857; }
+.status-warn                                   { color: #b45309; }
+.status-err                                    { color: #b91c1c; }
+.status-info                                   { color: #1d4ed8; }
+
+.status-ok, .status-warn, .status-err { font-weight: bold; }
+
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
     font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
-
-.status-missing {
-    color: red;
-    font-weight: bold;
-}
-
-.status-warning {
-    color: #d97706;
-    font-weight: bold;
-}
-
-.status-warning-text {
-    color: #b45309;
-}
-
-.status-error-text {
-    color: #dc2626;
-}
+.badge-positive, .badge-sent   { background: #def7ec; color: #047857; }
+.badge-negative, .badge-failed { background: #fde8e8; color: #b91c1c; }
+.badge-queued                  { background: #e1effe; color: #1d4ed8; }
 
 .status-line {
     margin: 4px 0;
@@ -120,23 +125,71 @@ code {
     font-size: 13px;
 }
 
-/* DNS Instructions Modal/Panel */
-.dns-instructions {
-    margin-top: 10px;
+.code-box {
+    background: #f8f9fa;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
     padding: 10px;
-    background: #f9f9f9;
-    border: 1px solid #ddd;
-    display: none;
-}
-
-.dns-instructions pre {
+    font-family: monospace;
+    font-size: 12px;
     white-space: pre-wrap;
     word-break: break-all;
-    margin: 5px 0 0 0;
+    max-height: 200px;
+    overflow-y: auto;
 }
 
 .dns-note {
     font-size: 13px;
     color: #666;
     margin-top: 15px;
+}
+
+/* Native HTML5 Dialog */
+dialog {
+    border: none;
+    border-radius: 6px;
+    width: 90%;
+    max-width: 720px;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+    padding: 24px;
+    background: #fff;
+    color: inherit;
+}
+
+dialog::backdrop {
+    background: rgba(0, 0, 0, 0.45);
+}
+
+.dialog-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #e0e0e0;
+    padding-bottom: 12px;
+    margin-bottom: 16px;
+}
+
+.dialog-header h3 {
+    margin: 0;
+}
+
+.detail-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 16px;
+}
+
+.detail-table th, .detail-table td {
+    padding: 6px 10px;
+    border: 1px solid #eee;
+    text-align: left;
+}
+
+.detail-table th {
+    width: 140px;
+    background: #f8f9fa;
+    color: #444;
+    font-weight: 600;
 }

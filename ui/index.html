@@ -27,12 +27,11 @@
                     <th>SPF</th>
                     <th>DKIM</th>
                     <th>DMARC</th>
-                    <th>Actions</th>
+                    <th>Action</th>
                 </tr>
             </thead>
             <tbody></tbody>
         </table>
-        <div id="dns-instructions-container" class="dns-instructions"></div>
     </div>
 
     <div class="section">
@@ -61,10 +60,39 @@
         <h2>Queue</h2>
         <button onclick="loadMessages()">Refresh</button>
         <table id="queue-table">
-            <thead><tr><th>ID</th><th>From</th><th>To</th><th>Status</th><th>Attempts</th><th>Error</th><th>Date</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Subject</th>
+                    <th>From</th>
+                    <th>To</th>
+                    <th>Status</th>
+                    <th>Attempts</th>
+                    <th>Date</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
             <tbody></tbody>
         </table>
     </div>
+
+    <!-- Message Detail Dialog -->
+    <dialog id="message-dialog">
+        <div class="dialog-header">
+            <h3 id="dialog-title">Message Details</h3>
+            <button class="btn-sm" onclick="closeMessageDetail()">&#10006;</button>
+        </div>
+        <div id="dialog-body">Loading...</div>
+    </dialog>
+
+    <!-- DNS Setup Dialog -->
+    <dialog id="dns-dialog">
+        <div class="dialog-header">
+            <h3 id="dns-dialog-title">DNS Setup</h3>
+            <button class="btn-sm" onclick="closeDnsDialog()">&#10006;</button>
+        </div>
+        <div id="dns-dialog-body">Loading...</div>
+    </dialog>
 
     <script src="/script.js"></script>
 </body>

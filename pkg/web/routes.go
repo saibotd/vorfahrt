@@ -28,6 +28,7 @@ func RegisterRoutes(mux *http.ServeMux, cfg Config) {
 	mux.HandleFunc("/api/accounts", handleAccounts(cfg.DB, validDomainsFunc))
 	mux.HandleFunc("/api/accounts/delete", handleDeleteAccount(cfg.DB))
 	mux.HandleFunc("/api/messages", handleMessages(cfg.DB))
+	mux.HandleFunc("/api/messages/detail", handleMessageDetail(cfg.DB))
 	mux.HandleFunc("/api/server-status", handleServerStatus(cfg.SMTPDomain))
 	mux.HandleFunc("/api/domains", handleDomains(cfg.AcmeProvider, cfg.SMTPDomain, cfg.DKIMExpected, cfg.DKIMSelector))
 

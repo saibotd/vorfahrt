@@ -14,6 +14,7 @@ type Message struct {
 	ID        uint      `gorm:"primarykey" json:"id"`
 	From      string    `json:"sender"`
 	To        string    `json:"recipient"`
+	Subject   string    `json:"subject"`
 	Data      []byte    `json:"-"`
 	Status    string    `json:"status"` // queued, sent, failed
 	Attempts  int       `json:"attempts"`
