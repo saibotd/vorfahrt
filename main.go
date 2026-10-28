@@ -152,6 +152,9 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		var domains []string
 		if tlsProv != nil {
+			if err := tlsProv.Reload(); err != nil {
+				log.Println("Error reloading acme.json:", err)
+			}
 			domains = tlsProv.Domains()
 		}
 
@@ -203,6 +206,11 @@ func main() {
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if tlsProv != nil {
+			if err := tlsProv.Reload(); err != nil {
+				log.Println("Error reloading acme.json:", err)
+			}
+		}
 		content, _ := uiFS.ReadFile("ui/index.html")
 		w.Header().Set("Content-Type", "text/html")
 		w.Write(content)

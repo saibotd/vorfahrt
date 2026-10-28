@@ -50,10 +50,8 @@ func (p *Provider) watch() {
 	}
 	defer watcher.Close()
 
-	if err := watcher.Add(filepath.Dir(p.path)); err != nil {
-		log.Println("Failed to watch acme directory:", err)
-		return
-	}
+	_ = watcher.Add(filepath.Dir(p.path))
+	_ = watcher.Add(p.path)
 
 	for {
 		select {
@@ -61,11 +59,15 @@ func (p *Provider) watch() {
 			if !ok {
 				return
 			}
-			if event.Name == p.path && (event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create) {
+			isTargetFile := filepath.Clean(event.Name) == filepath.Clean(p.path) || filepath.Base(event.Name) == filepath.Base(p.path)
+			if isTargetFile && (event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create) {
 				log.Println("acme.json modified, reloading...")
 				if err := p.Reload(); err != nil {
 					log.Println("Error reloading acme.json:", err)
 				}
+			}
+			if isTargetFile && (event.Op&fsnotify.Remove == fsnotify.Remove || event.Op&fsnotify.Rename == fsnotify.Rename) {
+				_ = watcher.Add(p.path)
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
