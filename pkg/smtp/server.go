@@ -1,12 +1,9 @@
 package smtp
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"log"
-	"mime"
-	"net/mail"
 	"strings"
 
 	"vorfahrt/pkg/models"
@@ -160,7 +157,7 @@ func (s *Session) Data(r io.Reader) error {
 		return err
 	}
 
-	subject := parseSubject(data)
+	subject := models.ParseSubject(data)
 	
 	for _, to := range s.to {
 		msg := models.Message{
@@ -177,40 +174,6 @@ func (s *Session) Data(r io.Reader) error {
 	}
 
 	return nil
-}
-
-func parseSubject(data []byte) string {
-	if len(data) == 0 {
-		return ""
-	}
-	dec := new(mime.WordDecoder)
-	msg, err := mail.ReadMessage(bytes.NewReader(data))
-	if err == nil {
-		subj := msg.Header.Get("Subject")
-		if subj != "" {
-			if decoded, err := dec.DecodeHeader(subj); err == nil {
-				return decoded
-			}
-			return subj
-		}
-	}
-
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
-		lower := strings.ToLower(line)
-		if strings.HasPrefix(lower, "subject:") {
-			subj := strings.TrimSpace(line[8:])
-			if decoded, err := dec.DecodeHeader(subj); err == nil {
-				return decoded
-			}
-			return subj
-		}
-		if line == "" {
-			break
-		}
-	}
-	return ""
 }
 
 func (s *Session) Reset() {

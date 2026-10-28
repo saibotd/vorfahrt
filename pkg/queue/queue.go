@@ -73,6 +73,9 @@ func (wk *Worker) Start() {
 		wk.DB.Where("status = ?", "queued").Find(&messages)
 
 		for _, msg := range messages {
+			if msg.Subject == "" && len(msg.Data) > 0 {
+				msg.Subject = models.ParseSubject(msg.Data)
+			}
 			msg.Attempts++
 			err := wk.processMessage(&msg)
 			if err != nil {

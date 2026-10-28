@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/mail"
 	"strconv"
-	"strings"
 	"time"
 
 	"vorfahrt/pkg/models"
@@ -80,7 +79,7 @@ func handleMessages(db *gorm.DB) http.HandlerFunc {
 			msg := &msgs[i]
 			subj := msg.Subject
 			if subj == "" && len(msg.Data) > 0 {
-				subj = parseSubjectFromData(msg.Data)
+				subj = models.ParseSubject(msg.Data)
 				if subj != "" {
 					msg.Subject = subj
 					db.Model(&models.Message{}).Where("id = ?", msg.ID).Update("subject", subj)
@@ -133,7 +132,7 @@ func handleMessageDetail(db *gorm.DB) http.HandlerFunc {
 func formatMessageDetail(msg *models.Message, db *gorm.DB) MessageDetailResponse {
 	subj := msg.Subject
 	if subj == "" && len(msg.Data) > 0 {
-		subj = parseSubjectFromData(msg.Data)
+		subj = models.ParseSubject(msg.Data)
 		if subj != "" && db != nil {
 			msg.Subject = subj
 			db.Model(&models.Message{}).Where("id = ?", msg.ID).Update("subject", subj)
@@ -161,43 +160,6 @@ func formatMessageDetail(msg *models.Message, db *gorm.DB) MessageDetailResponse
 	}
 
 	return resp
-}
-
-func parseSubjectFromData(data []byte) string {
-	if len(data) == 0 {
-		return ""
-	}
-
-	dec := new(mime.WordDecoder)
-	msg, err := mail.ReadMessage(bytes.NewReader(data))
-	if err == nil {
-		subj := msg.Header.Get("Subject")
-		if subj != "" {
-			if decoded, err := dec.DecodeHeader(subj); err == nil {
-				return decoded
-			}
-			return subj
-		}
-	}
-
-	// Line-by-line fallback
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
-		lower := strings.ToLower(line)
-		if strings.HasPrefix(lower, "subject:") {
-			subj := strings.TrimSpace(line[8:])
-			if decoded, err := dec.DecodeHeader(subj); err == nil {
-				return decoded
-			}
-			return subj
-		}
-		if line == "" {
-			break
-		}
-	}
-
-	return ""
 }
 
 func parseMessageData(data []byte) (map[string]string, string) {

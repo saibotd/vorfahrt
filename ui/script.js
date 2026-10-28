@@ -334,10 +334,6 @@ function showInstructions(encodedData) {
         <h4 style="margin: 16px 0 6px 0;">3. DMARC</h4>
         <p class="status-line"><small class="text-muted">Host / Name: <code>_dmarc</code></small></p>
         <div class="code-box">v=DMARC1; p=none;</div>
-
-        <p class="dns-note">
-            <i>Note on Reverse DNS (PTR):</i> rDNS is configured once at the server IP level for your primary mail host (see Server Identity section above). Recipient servers do not require individual sender domains to match the server IP's PTR record.
-        </p>
     `;
 
     if (!dialog.open) {
