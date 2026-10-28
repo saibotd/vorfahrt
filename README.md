@@ -12,22 +12,107 @@ Vorfahrt is a simple, queueing SMTP server written in Go. It is designed to run 
 - **DKIM Signing**: Automatically generates a DKIM key and signs all outgoing messages to improve deliverability.
 - **Web UI**: A simple interface to create and manage domain-tethered sender credentials, inspect the email queue, verify server Forward-Confirmed Reverse DNS (FCrDNS / PTR), and check per-domain authentication status (SPF, DKIM, DMARC).
 
-## Quick Start (Docker Compose)
+## Example `compose.yml`
 
-Vorfahrt is best run via Docker Compose alongside Traefik. A sample `docker-compose.yml` is provided.
+Below is a complete example showing how **Traefik**, **Vorfahrt**, and your **application(s)** can be set up together:
 
-1. Ensure your Traefik instance is saving its certificates to a file named `acme.json`.
-2. Configure the `docker-compose.yml` to mount the `acme.json` file into Vorfahrt:
-   ```yaml
-   volumes:
-     - "/path/to/your/traefik/acme.json:/data/acme.json:ro"
-     - "./data:/data" # Persist SQLite DB and DKIM key
-   ```
-3. Start the service:
+- **Traefik** terminates HTTPS, acquires Let's Encrypt certificates, and stores them in `acme.json`.
+- **Vorfahrt** mounts `acme.json` (read-only) for STARTTLS and sender domain validation, serves its Web UI behind Traefik, and acts as an authenticated SMTP relay.
+- **Your App** connects to Vorfahrt over the internal Docker network using sender credentials generated in Vorfahrt's Web UI.
+
+```yaml
+services:
+  traefik:
+    image: traefik:v3.0
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=admin@example.com"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./letsencrypt:/letsencrypt"
+    networks:
+      - web
+    restart: unless-stopped
+
+  vorfahrt:
+    image: ghcr.io/saibotd/vorfahrt:latest # or build: .
+    environment:
+      # Primary server hostname for SMTP EHLO/HELO and rDNS (PTR) validation
+      - SMTP_DOMAIN=mail.example.com
+      # SMTP listen address inside the container
+      - SMTP_ADDR=:25
+      # Path to mounted acme.json for TLS certs and sender domain validation
+      - ACME_FILE=/data/acme.json
+      # Storage directory for SQLite database (data.db) and keys
+      - DATA_DIR=/data
+      - DKIM_KEY_FILE=/data/dkim.key
+      - DKIM_SELECTOR=mail
+      - QUEUE_RETENTION=24h
+      # Web UI credentials
+      - WEB_ADDR=:8080
+      - WEB_USERNAME=admin
+      - WEB_PASSWORD=replace-with-a-secure-password
+    volumes:
+      # Read-only mount of Traefik's acme.json for TLS certs & domain validation
+      - "./letsencrypt/acme.json:/data/acme.json:ro"
+      # Persistent storage for SQLite DB and generated DKIM key
+      - "./vorfahrt-data:/data"
+    # ports:
+    #   - "25:25" # Optional: only expose to the host if accepting SMTP from outside Docker
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.vorfahrt.rule=Host(`mail.example.com`)"
+      - "traefik.http.routers.vorfahrt.entrypoints=websecure"
+      - "traefik.http.routers.vorfahrt.tls.certresolver=myresolver"
+      - "traefik.http.services.vorfahrt.loadbalancer.server.port=8080"
+    networks:
+      - web
+    restart: unless-stopped
+
+  myapp:
+    image: my-app:latest
+    environment:
+      # Route outgoing email through Vorfahrt over the shared Docker network
+      - SMTP_HOST=vorfahrt
+      - SMTP_PORT=25
+      - SMTP_USER=myapp
+      - SMTP_PASSWORD=generated-in-vorfahrt-ui
+      - SMTP_FROM=hello@example.com
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.myapp.rule=Host(`example.com`)"
+      - "traefik.http.routers.myapp.entrypoints=websecure"
+      - "traefik.http.routers.myapp.tls.certresolver=myresolver"
+      - "traefik.http.services.myapp.loadbalancer.server.port=3000"
+    networks:
+      - web
+    depends_on:
+      - vorfahrt
+    restart: unless-stopped
+
+networks:
+  web:
+    driver: bridge
+```
+
+## Quick Start
+
+1. Configure your `compose.yml` (see example above), ensuring Traefik stores certificates in an `acme.json` file mounted into Vorfahrt.
+2. Start the services:
    ```bash
    docker compose up -d
    ```
-4. Access the Web UI at http://localhost:8080 (or your configured Traefik domain).
+3. Access the Web UI at `https://mail.example.com` (or `http://localhost:8080` if accessing locally).
+4. Check **Server Identity & Connectivity** in the UI to confirm PTR (FCrDNS) and outbound port 25 status.
+5. Create sender credentials tethered to your domain (e.g., `example.com`) and configure your app to use them.
 
 ## Environment Variables
 
