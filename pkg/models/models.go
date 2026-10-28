@@ -3,9 +3,11 @@ package models
 import "time"
 
 type Account struct {
-	ID       uint   `gorm:"primarykey" json:"id"`
-	Username string `gorm:"uniqueIndex" json:"username"`
-	Password string `json:"password,omitempty"`
+	ID        uint      `gorm:"primarykey" json:"id"`
+	Domain    string    `json:"domain"`
+	Username  string    `gorm:"uniqueIndex" json:"username"`
+	Password  string    `json:"password"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Message struct {

@@ -91,15 +91,17 @@ func main() {
 		tlsProv = acme.NewProvider(acmeFile)
 	}
 
+	validDomainsFunc := func() []string {
+		if tlsProv != nil {
+			return tlsProv.Domains()
+		}
+		return nil
+	}
+
 	// SMTP Server
 	be := &local_smtp.Backend{
-		DB: db,
-		ValidDomains: func() []string {
-			if tlsProv != nil {
-				return tlsProv.Domains()
-			}
-			return nil
-		},
+		DB:           db,
+		ValidDomains: validDomainsFunc,
 	}
 	s := smtp.NewServer(be)
 	
@@ -137,7 +139,7 @@ func main() {
 
 	// Web API & UI
 	mux := http.NewServeMux()
-	web.RegisterHandlers(mux, db)
+	web.RegisterHandlers(mux, db, validDomainsFunc)
 	
 	var dkimExpected string
 	if dkimKey != nil {
