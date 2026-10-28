@@ -4,3 +4,4 @@ data/
 data.db
 *.dkim.key
 .env
+deploy.sh
