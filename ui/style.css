@@ -1,0 +1,142 @@
+body {
+    font-family: sans-serif;
+    margin: 20px;
+}
+
+.section {
+    margin-bottom: 40px;
+}
+
+/* Card & Header Styles */
+.card {
+    background: #fbfbfb;
+    padding: 15px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.card-header h2 {
+    margin: 0;
+}
+
+/* Tables */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 10px;
+}
+
+th, td {
+    border: 1px solid #ccc;
+    padding: 8px;
+    text-align: left;
+}
+
+th {
+    background: #eee;
+}
+
+/* Form Elements & Buttons */
+input, select {
+    padding: 5px;
+    margin-right: 5px;
+}
+
+button {
+    padding: 5px 10px;
+    cursor: pointer;
+}
+
+.btn-sm {
+    font-size: 12px;
+    padding: 3px 8px;
+}
+
+.btn-copy {
+    padding: 2px 6px;
+    font-size: 12px;
+    margin-left: 5px;
+}
+
+.form-row {
+    margin-bottom: 10px;
+}
+
+/* Status Indicators */
+.status-ok {
+    color: green;
+    font-weight: bold;
+}
+
+.status-missing {
+    color: red;
+    font-weight: bold;
+}
+
+.status-warning {
+    color: #d97706;
+    font-weight: bold;
+}
+
+.status-warning-text {
+    color: #b45309;
+}
+
+.status-error-text {
+    color: #dc2626;
+}
+
+.status-line {
+    margin: 4px 0;
+}
+
+.outbound-status-box {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed #ddd;
+}
+
+/* Typography & Utility */
+.text-muted {
+    color: #666;
+}
+
+.text-inline {
+    margin-left: 10px;
+}
+
+code {
+    font-family: monospace;
+    background: #f3f3f3;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+}
+
+/* DNS Instructions Modal/Panel */
+.dns-instructions {
+    margin-top: 10px;
+    padding: 10px;
+    background: #f9f9f9;
+    border: 1px solid #ddd;
+    display: none;
+}
+
+.dns-instructions pre {
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 5px 0 0 0;
+}
+
+.dns-note {
+    font-size: 13px;
+    color: #666;
+    margin-top: 15px;
+}

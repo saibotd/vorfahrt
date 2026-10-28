@@ -1,12 +1,13 @@
 package main
 
 import (
-	"embed"
+	"crypto/x509"
+	"encoding/base64"
 	"log"
 	"net/http"
 	"os"
-	"time"
 	"path/filepath"
+	"time"
 
 	"vorfahrt/pkg/acme"
 	"vorfahrt/pkg/models"
@@ -17,101 +18,7 @@ import (
 	"github.com/emersion/go-smtp"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
-	"crypto/x509"
-	"encoding/base64"
-	"encoding/json"
-	"net"
-	"strings"
-	"sync"
 )
-
-type OutboundStatus struct {
-	Status    string    `json:"status"` // "ok" or "blocked"
-	Target    string    `json:"target,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
-}
-
-var (
-	outboundCheckMu    sync.Mutex
-	lastOutboundResult *OutboundStatus
-)
-
-// checkOutboundPort25 checks whether outbound connections on TCP port 25 can be established.
-// To avoid alerting or spamming actual mail provider filters (Google, Microsoft) with connection probes,
-// it first tests against portquiz.net:25 (a dedicated open service for firewall testing).
-// Only if that fails does it fall back to a standard SMTP host with a polite QUIT command.
-func checkOutboundPort25(force bool) OutboundStatus {
-	outboundCheckMu.Lock()
-	defer outboundCheckMu.Unlock()
-
-	if !force && lastOutboundResult != nil && time.Since(lastOutboundResult.CheckedAt) < 10*time.Minute {
-		return *lastOutboundResult
-	}
-
-	// 1. Primary target: portquiz.net:25
-	conn, err := net.DialTimeout("tcp", "portquiz.net:25", 3*time.Second)
-	if err == nil {
-		conn.Close()
-		res := OutboundStatus{
-			Status:    "ok",
-			Target:    "portquiz.net:25",
-			CheckedAt: time.Now(),
-		}
-		lastOutboundResult = &res
-		return res
-	}
-
-	// 2. Fallback: only if portquiz is unreachable, test standard SMTP server with graceful QUIT
-	fallbackAddr := "smtp.gmail.com:25"
-	conn, fbErr := net.DialTimeout("tcp", fallbackAddr, 3*time.Second)
-	if fbErr == nil {
-		conn.SetDeadline(time.Now().Add(3 * time.Second))
-		buf := make([]byte, 256)
-		conn.Read(buf)
-		conn.Write([]byte("QUIT\r\n"))
-		conn.Close()
-		res := OutboundStatus{
-			Status:    "ok",
-			Target:    fallbackAddr,
-			CheckedAt: time.Now(),
-		}
-		lastOutboundResult = &res
-		return res
-	}
-
-	errMsg := err.Error()
-	if fbErr != nil {
-		errMsg = fbErr.Error()
-	}
-	res := OutboundStatus{
-		Status:    "blocked",
-		Error:     errMsg,
-		CheckedAt: time.Now(),
-	}
-	lastOutboundResult = &res
-	return res
-}
-
-
-//go:embed ui/index.html
-var uiFS embed.FS
-
-func basicAuth(next http.Handler, username, password string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if password == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		u, p, ok := r.BasicAuth()
-		if !ok || u != username || p != password {
-			w.Header().Set("WWW-Authenticate", `Basic realm="Vorfahrt"`)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
 
 func main() {
 	log.Println("Starting Vorfahrt...")
@@ -135,7 +42,7 @@ func main() {
 	// DKIM Key Setup
 	dkimKeyFile := os.Getenv("DKIM_KEY_FILE")
 	if dkimKeyFile == "" {
-		dkimKeyFile = filepath.Join(dataDir, "dkim.key") // default alongside DB
+		dkimKeyFile = filepath.Join(dataDir, "dkim.key")
 	}
 	dkimKey, err := queue.LoadOrGenerateDKIMKey(dkimKeyFile)
 	if err != nil {
@@ -151,6 +58,7 @@ func main() {
 		smtpDomain = "localhost"
 	}
 
+	// Queue Retention
 	queueRetentionStr := os.Getenv("QUEUE_RETENTION")
 	queueRetention, err := queue.ParseRetention(queueRetentionStr)
 	if err != nil {
@@ -173,8 +81,8 @@ func main() {
 	}
 	go worker.Start()
 
-	// Pre-warm outbound port 25 check
-	go checkOutboundPort25(false)
+	// Pre-warm outbound port 25 connectivity check in background
+	go web.CheckOutboundPort25(false)
 
 	// TLS config if acme.json is provided
 	var tlsProv *acme.Provider
@@ -183,20 +91,18 @@ func main() {
 		tlsProv = acme.NewProvider(acmeFile)
 	}
 
-	validDomainsFunc := func() []string {
-		if tlsProv != nil {
-			return tlsProv.Domains()
-		}
-		return nil
-	}
-
 	// SMTP Server
 	be := &local_smtp.Backend{
-		DB:           db,
-		ValidDomains: validDomainsFunc,
+		DB: db,
+		ValidDomains: func() []string {
+			if tlsProv != nil {
+				return tlsProv.Domains()
+			}
+			return nil
+		},
 	}
 	s := smtp.NewServer(be)
-	
+
 	smtpAddr := os.Getenv("SMTP_ADDR")
 	if smtpAddr == "" {
 		smtpAddr = ":25"
@@ -226,149 +132,29 @@ func main() {
 		}
 	}()
 
-	// Web API & UI
-	mux := http.NewServeMux()
-	web.RegisterHandlers(mux, db, validDomainsFunc)
-	
+	// Format expected DKIM DNS value
 	var dkimExpected string
 	if dkimKey != nil {
-		pubKeyBytes, err := x509.MarshalPKIXPublicKey(&dkimKey.PublicKey)
-		if err == nil {
-			pubKeyBase64 := base64.StdEncoding.EncodeToString(pubKeyBytes)
-			dkimExpected = "v=DKIM1; k=rsa; p=" + pubKeyBase64
+		if pubKeyBytes, err := x509.MarshalPKIXPublicKey(&dkimKey.PublicKey); err == nil {
+			dkimExpected = "v=DKIM1; k=rsa; p=" + base64.StdEncoding.EncodeToString(pubKeyBytes)
 		}
 	}
 
-	mux.HandleFunc("/api/server-status", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		forceRecheck := r.URL.Query().Get("recheck") == "true" || r.URL.Query().Get("recheck") == "1"
-		outbound := checkOutboundPort25(forceRecheck)
-
-		status := struct {
-			SMTPDomain           string `json:"smtp_domain"`
-			IP                   string `json:"ip"`
-			PTR                  string `json:"ptr"`
-			PTRFound             bool   `json:"ptr_found"`
-			PTRMatches           bool   `json:"ptr_matches"`
-			FCrDNSStatus         string `json:"fcrdns_status"` // "ok", "mismatch", "missing_ptr", "missing_a", "unconfigured"
-			OutboundPort25Status string `json:"outbound_port_25_status"` // "ok", "blocked"
-			OutboundPort25Target string `json:"outbound_port_25_target,omitempty"`
-			OutboundPort25Error  string `json:"outbound_port_25_error,omitempty"`
-		}{
-			SMTPDomain:           smtpDomain,
-			OutboundPort25Status: outbound.Status,
-			OutboundPort25Target: outbound.Target,
-			OutboundPort25Error:  outbound.Error,
-		}
-
-		if smtpDomain == "" || smtpDomain == "localhost" {
-			status.FCrDNSStatus = "unconfigured"
-			json.NewEncoder(w).Encode(status)
-			return
-		}
-
-		ips, err := net.LookupIP(smtpDomain)
-		if err != nil || len(ips) == 0 {
-			status.FCrDNSStatus = "missing_a"
-			json.NewEncoder(w).Encode(status)
-			return
-		}
-
-		status.IP = ips[0].String()
-		ptrs, err := net.LookupAddr(status.IP)
-		if err != nil || len(ptrs) == 0 {
-			status.FCrDNSStatus = "missing_ptr"
-			json.NewEncoder(w).Encode(status)
-			return
-		}
-
-		status.PTRFound = true
-		status.PTR = strings.TrimSuffix(ptrs[0], ".")
-		if strings.EqualFold(status.PTR, smtpDomain) {
-			status.PTRMatches = true
-			status.FCrDNSStatus = "ok"
-		} else {
-			status.FCrDNSStatus = "mismatch"
-		}
-
-		json.NewEncoder(w).Encode(status)
-	})
-
-	mux.HandleFunc("/api/domains", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		var domains []string
-		if tlsProv != nil {
-			if err := tlsProv.Reload(); err != nil {
-				log.Println("Error reloading acme.json:", err)
-			}
-			domains = tlsProv.Domains()
-		}
-
-		type DomainStatus struct {
-			Domain       string `json:"domain"`
-			DKIMExpected string `json:"dkim_expected"`
-			DKIMName     string `json:"dkim_name"`
-			DKIMFound    bool   `json:"dkim_found"`
-			SPFFound     bool   `json:"spf_found"`
-			DMARCFound   bool   `json:"dmarc_found"`
-			SMTPDomain   string `json:"smtp_domain"`
-		}
-
-		var statuses []DomainStatus
-		for _, d := range domains {
-			st := DomainStatus{
-				Domain:       d,
-				DKIMExpected: dkimExpected,
-				DKIMName:     dkimSelector + "._domainkey",
-				SMTPDomain:   smtpDomain,
-			}
-
-			// Check DKIM
-			txts, _ := net.LookupTXT(st.DKIMName + "." + d)
-			for _, txt := range txts {
-				if strings.Contains(txt, "v=DKIM1") {
-					st.DKIMFound = true
-				}
-			}
-
-			// Check SPF
-			txts, _ = net.LookupTXT(d)
-			for _, txt := range txts {
-				if strings.HasPrefix(txt, "v=spf1") {
-					st.SPFFound = true
-				}
-			}
-
-			// Check DMARC
-			txts, _ = net.LookupTXT("_dmarc." + d)
-			for _, txt := range txts {
-				if strings.HasPrefix(txt, "v=DMARC1") {
-					st.DMARCFound = true
-				}
-			}
-
-			statuses = append(statuses, st)
-		}
-
-		json.NewEncoder(w).Encode(statuses)
-	})
-
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if tlsProv != nil {
-			if err := tlsProv.Reload(); err != nil {
-				log.Println("Error reloading acme.json:", err)
-			}
-		}
-		content, _ := uiFS.ReadFile("ui/index.html")
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(content)
+	// Web API & UI
+	mux := http.NewServeMux()
+	web.RegisterRoutes(mux, web.Config{
+		DB:           db,
+		AcmeProvider: tlsProv,
+		SMTPDomain:   smtpDomain,
+		DKIMExpected: dkimExpected,
+		DKIMSelector: dkimSelector,
 	})
 
 	webAddr := os.Getenv("WEB_ADDR")
 	if webAddr == "" {
 		webAddr = ":8080"
 	}
-	
+
 	webUser := os.Getenv("WEB_USERNAME")
 	if webUser == "" {
 		webUser = "admin"
@@ -376,5 +162,5 @@ func main() {
 	webPass := os.Getenv("WEB_PASSWORD")
 
 	log.Println("Starting Web UI on", webAddr)
-	log.Fatal(http.ListenAndServe(webAddr, basicAuth(mux, webUser, webPass)))
+	log.Fatal(http.ListenAndServe(webAddr, web.BasicAuth(mux, webUser, webPass)))
 }

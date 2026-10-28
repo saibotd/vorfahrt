@@ -25,8 +25,8 @@ func generatePassword(length int) (string, error) {
 	return string(b), nil
 }
 
-func RegisterHandlers(mux *http.ServeMux, db *gorm.DB, validDomains func() []string) {
-	mux.HandleFunc("/api/accounts", func(w http.ResponseWriter, r *http.Request) {
+func handleAccounts(db *gorm.DB, validDomains func() []string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		if r.Method == http.MethodGet {
 			var accs []models.Account
@@ -85,24 +85,23 @@ func RegisterHandlers(mux *http.ServeMux, db *gorm.DB, validDomains func() []str
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
+	}
+}
 
-	mux.HandleFunc("/api/accounts/delete", func(w http.ResponseWriter, r *http.Request) {
+func handleDeleteAccount(db *gorm.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			var req struct { ID uint `json:"id"` }
+			var req struct {
+				ID uint `json:"id"`
+			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 				db.Delete(&models.Account{}, req.ID)
 				w.WriteHeader(http.StatusOK)
+			} else {
+				http.Error(w, "Invalid request", http.StatusBadRequest)
 			}
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
-
-	mux.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		if r.Method == http.MethodGet {
-			var msgs []models.Message
-			db.Order("created_at desc").Limit(50).Find(&msgs)
-			json.NewEncoder(w).Encode(msgs)
-		}
-	})
+	}
 }

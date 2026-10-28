@@ -28,9 +28,12 @@ It embeds a minimal web interface for managing sender accounts, viewing outbound
 │   ├── models/            # GORM database models (Account, Message)
 │   ├── queue/             # Background queue worker, MX resolution, DKIM generation/signing
 │   ├── smtp/              # SMTP backend session, SASL PLAIN/LOGIN auth, sender domain validation
-│   └── web/               # REST API handlers for sender accounts and messages
+│   └── web/               # Web server routes, accounts, domains, server status, and UI handlers
 ├── ui/
-│   └── index.html         # Embedded Web UI
+│   ├── index.html         # Embedded HTML template
+│   ├── script.js          # Client-side logic and API calls
+│   ├── style.css          # Styling for Web UI
+│   └── ui.go              # Embedded filesystem definition (ui.FS)
 └── _testdata/
     └── acme.json          # Sample Traefik certificate storage for local testing
 ```
