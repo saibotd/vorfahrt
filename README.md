@@ -2,6 +2,8 @@
 
 Vorfahrt is a simple, queueing SMTP server written in Go. It is designed to run in a Docker environment, particularly alongside Traefik. It provides a minimal Web UI for managing sender accounts and inspecting the outbound queue.
 
+![Vorfahrt Web UI](screenshots/vorfahrt-ui.png)
+
 ## Features
 
 - **SMTP Server**: Accepts incoming emails and stores them in a local SQLite database.
