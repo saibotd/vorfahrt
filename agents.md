@@ -6,7 +6,7 @@ Developer and agent guide for the **Vorfahrt** codebase.
 
 Vorfahrt is a lightweight, self-hosted queueing SMTP server written in Go. It is designed to run in Docker alongside Traefik, utilizing Traefik's `acme.json` storage for TLS certificates and sender domain discovery.
 
-It embeds a minimal web interface for managing sender accounts, viewing outbound mail queues, and inspecting DNS records (SPF, DKIM, DMARC) for each configured domain.
+It embeds a minimal web interface for managing sender accounts, viewing outbound mail queues, verifying server Forward-Confirmed Reverse DNS (FCrDNS), and inspecting DNS records (SPF, DKIM, DMARC) for each configured domain.
 
 ## Tech Stack & Architecture
 
@@ -54,7 +54,13 @@ It embeds a minimal web interface for managing sender accounts, viewing outbound
 - Outgoing messages submitted via SMTP are stored in the SQLite database with `status = "queued"`.
 - The background `Worker` scans for queued messages every 5 seconds.
 - Outgoing messages are signed using the system DKIM key and configured selector (`DKIM_SELECTOR`).
-- The worker queries destination MX records and delivers mail server-to-server over port 25. Failed attempts increment `attempts` up to 5 retries before marking as `failed`. Once sent, message raw data is purged.
+- The worker announces `EHLO <SMTP_DOMAIN>`, negotiates `STARTTLS` with remote MX servers if supported, and iterates through discovered MX candidates. Failed attempts increment `attempts` up to 5 retries before marking as `failed`. Once sent, message raw data is purged.
+
+### 4. Server Identity & FCrDNS Verification (`main.go`, `ui/index.html`)
+- An IP only has one PTR record. Multi-tenant mail servers verify rDNS at the server infrastructure level:
+  - `SMTP_DOMAIN` defines the canonical hostname (e.g., `mail.saibotd.com`).
+  - `/api/server-status` resolves `SMTP_DOMAIN` $\rightarrow$ IP, then queries reverse DNS `IP` $\rightarrow$ PTR, verifying FCrDNS.
+  - Per-tenant domains only require SPF (`v=spf1 a:<SMTP_DOMAIN> mx ~all`), DKIM, and DMARC.
 
 ### 4. Database Migrations
 - GORM auto-migrates `Account` and `Message` tables at startup (`main.go`).

@@ -22,23 +22,30 @@ services:
   vorfahrt:
     build: .
     environment:
-      # Use the mounted acme.json for TLS certs (and valid sender domains)
+      # Primary server hostname for SMTP EHLO/HELO and rDNS (PTR) validation
+      - SMTP_DOMAIN=mail.example.com
+      # SMTP listen address (port 25)
+      - SMTP_ADDR=:25
+      # Path to mounted acme.json for TLS certs and sender domain validation
       - ACME_FILE=/data/acme.json
-      # Define credentials for the Web UI (optional)
-      - WEB_USERNAME=admin
-      - WEB_PASSWORD=secret
-      # Automatically generate DKIM key if not present and use it
+      # Storage directory for SQLite database (data.db) and keys
+      - DATA_DIR=/data
+      # DKIM key configuration (auto-generated if missing)
       - DKIM_KEY_FILE=/data/dkim.key
       - DKIM_SELECTOR=mail
-      # Allow incoming TLS on SMTP (if implicit TLS is desired instead of STARTTLS)
-      # - SMTP_IMPLICIT_TLS=true
+      # Web UI credentials and address
+      - WEB_ADDR=:8080
+      - WEB_USERNAME=admin
+      - WEB_PASSWORD=secret
+      # Set to true if exposing port 465 for Implicit TLS (SMTPS). Defaults to false (STARTTLS).
+      # - SMTP_IMPLICIT_TLS=false
     ports:
-      - "25:25"      # Expose SMTP publicly to receive mail (if you want this server to also accept external mail)
-      - "8080:8080"  # Web UI port
+      - "25:25"      # Expose SMTP publicly to receive inbound mail from clients/servers
+      - "8080:8080"  # Web UI port (optional if routed through Traefik)
     volumes:
       # Share acme.json from Traefik
       - "./acme.json:/data/acme.json:ro"
-      # Persist DB and DKIM key
+      # Persist SQLite DB and DKIM key
       - "./data:/data"
     labels:
       - "traefik.enable=true"

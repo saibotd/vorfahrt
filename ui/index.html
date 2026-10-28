@@ -20,6 +20,11 @@
 <body>
     <h1>Vorfahrt - Simple Queueing SMTP</h1>
 
+    <div class="section" style="background: #fbfbfb; padding: 15px; border: 1px solid #e0e0e0; border-radius: 6px;">
+        <h2 style="margin-top: 0; margin-bottom: 10px;">Server Identity & rDNS (FCrDNS)</h2>
+        <div id="server-status-container">Checking server identity...</div>
+    </div>
+
     <div class="section">
         <h2>Valid Sender Domains</h2>
         <table id="domains-table">
@@ -147,6 +152,46 @@
             }
         }
 
+        async function loadServerStatus() {
+            const container = document.getElementById('server-status-container');
+            try {
+                const res = await fetch('/api/server-status');
+                const st = await res.json();
+                
+                if (st.fcrdns_status === 'ok') {
+                    container.innerHTML = `
+                        <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> (IP: <code>${st.ip}</code>)</p>
+                        <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <code>${st.ptr}</code> <span class="status-ok">✔ Valid FCrDNS</span></p>
+                        <small style="color: #666;">Forward-Confirmed Reverse DNS is verified. Recipient mail servers (Gmail, Outlook, etc.) will accept outbound connections from this IP.</small>
+                    `;
+                } else if (st.fcrdns_status === 'mismatch') {
+                    container.innerHTML = `
+                        <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> (IP: <code>${st.ip}</code>)</p>
+                        <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <code>${st.ptr}</code> <span style="color: #d97706; font-weight: bold;">⚠ Mismatch</span></p>
+                        <small style="color: #b45309;"><b>Action Required:</b> In your VPS / hosting control panel (Hetzner, Netcup, DigitalOcean, etc.), set the Reverse DNS (PTR) for <code>${st.ip}</code> to <code>${st.smtp_domain}</code>.</small>
+                    `;
+                } else if (st.fcrdns_status === 'missing_ptr') {
+                    container.innerHTML = `
+                        <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> (IP: <code>${st.ip}</code>)</p>
+                        <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <span class="status-missing">✖ Missing PTR Record</span></p>
+                        <small style="color: #dc2626;"><b>Action Required:</b> Set the Reverse DNS (PTR) for <code>${st.ip}</code> to <code>${st.smtp_domain}</code> in your hosting provider panel.</small>
+                    `;
+                } else if (st.fcrdns_status === 'missing_a') {
+                    container.innerHTML = `
+                        <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> <span class="status-missing">✖ Missing DNS A Record</span></p>
+                        <small style="color: #dc2626;"><b>Action Required:</b> Create an A record for <code>${st.smtp_domain}</code> pointing to your server's public IP.</small>
+                    `;
+                } else {
+                    container.innerHTML = `
+                        <p style="margin: 4px 0; color: #666;"><code>SMTP_DOMAIN</code> is currently set to <code>${st.smtp_domain || 'localhost'}</code>.</p>
+                        <small style="color: #666;">Set <code>SMTP_DOMAIN=mail.yourdomain.com</code> in your environment / docker-compose to establish your server's canonical sending identity.</small>
+                    `;
+                }
+            } catch (e) {
+                container.innerHTML = '<span class="status-missing">Failed to load server status.</span>';
+            }
+        }
+
         async function loadDomains() {
             const res = await fetch('/api/domains');
             const data = await res.json();
@@ -195,28 +240,37 @@
             const d = JSON.parse(decodeURIComponent(encodedData));
             const container = document.getElementById('dns-instructions-container');
             container.style.display = 'block';
+
+            const spfRecord = d.smtp_domain && d.smtp_domain !== 'localhost' 
+                ? `v=spf1 a:${d.smtp_domain} mx ~all` 
+                : `v=spf1 mx ~all`;
             
             container.innerHTML = `
                 <h3>DNS Instructions for ${d.domain}</h3>
-                <p>To ensure high deliverability and avoid spam filters, add the following TXT records to your DNS provider:</p>
+                <p>Configure the following TXT records in <b>${d.domain}</b>'s DNS manager:</p>
                 
-                <h4>1. SPF</h4>
-                <p>Add a TXT record for <b>@</b> (or empty name):</p>
-                <pre>v=spf1 mx -all</pre>
+                <h4>1. SPF (Sender Policy Framework)</h4>
+                <p>Add a TXT record for <b>@</b> (or apex domain) to authorize this server:</p>
+                <pre>${spfRecord}</pre>
 
-                <h4>2. DKIM</h4>
+                <h4>2. DKIM (DomainKeys Identified Mail)</h4>
                 <p>Add a TXT record for <b>${d.dkim_name}</b>:</p>
                 <pre>${d.dkim_expected}</pre>
 
                 <h4>3. DMARC</h4>
                 <p>Add a TXT record for <b>_dmarc</b>:</p>
                 <pre>v=DMARC1; p=none;</pre>
+
+                <p style="font-size: 13px; color: #666; margin-top: 15px;">
+                    <i>Note on Reverse DNS (PTR):</i> rDNS is configured once at the server IP level for your primary mail host (see Server Identity section above). Recipient servers do not require individual sender domains to match the server IP's PTR record.
+                </p>
                 
                 <br>
                 <button onclick="document.getElementById('dns-instructions-container').style.display='none'">Close</button>
             `;
         }
 
+        loadServerStatus();
         loadAccounts();
         loadMessages();
         loadDomains();

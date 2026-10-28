@@ -76,11 +76,17 @@ func main() {
 		dkimSelector = "mail"
 	}
 
+	smtpDomain := os.Getenv("SMTP_DOMAIN")
+	if smtpDomain == "" {
+		smtpDomain = "localhost"
+	}
+
 	// Start Queue Worker
 	worker := &queue.Worker{
-		DB:       db,
-		DKIMKey:  dkimKey,
-		Selector: dkimSelector,
+		DB:         db,
+		DKIMKey:    dkimKey,
+		Selector:   dkimSelector,
+		SMTPDomain: smtpDomain,
 	}
 	go worker.Start()
 
@@ -110,10 +116,7 @@ func main() {
 		smtpAddr = ":25"
 	}
 	s.Addr = smtpAddr
-	s.Domain = os.Getenv("SMTP_DOMAIN")
-	if s.Domain == "" {
-		s.Domain = "localhost"
-	}
+	s.Domain = smtpDomain
 	s.ReadTimeout = 10 * time.Second
 	s.WriteTimeout = 10 * time.Second
 	s.MaxMessageBytes = 1024 * 1024
@@ -150,6 +153,52 @@ func main() {
 		}
 	}
 
+	mux.HandleFunc("/api/server-status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		status := struct {
+			SMTPDomain   string `json:"smtp_domain"`
+			IP           string `json:"ip"`
+			PTR          string `json:"ptr"`
+			PTRFound     bool   `json:"ptr_found"`
+			PTRMatches   bool   `json:"ptr_matches"`
+			FCrDNSStatus string `json:"fcrdns_status"` // "ok", "mismatch", "missing_ptr", "missing_a", "unconfigured"
+		}{
+			SMTPDomain: smtpDomain,
+		}
+
+		if smtpDomain == "" || smtpDomain == "localhost" {
+			status.FCrDNSStatus = "unconfigured"
+			json.NewEncoder(w).Encode(status)
+			return
+		}
+
+		ips, err := net.LookupIP(smtpDomain)
+		if err != nil || len(ips) == 0 {
+			status.FCrDNSStatus = "missing_a"
+			json.NewEncoder(w).Encode(status)
+			return
+		}
+
+		status.IP = ips[0].String()
+		ptrs, err := net.LookupAddr(status.IP)
+		if err != nil || len(ptrs) == 0 {
+			status.FCrDNSStatus = "missing_ptr"
+			json.NewEncoder(w).Encode(status)
+			return
+		}
+
+		status.PTRFound = true
+		status.PTR = strings.TrimSuffix(ptrs[0], ".")
+		if strings.EqualFold(status.PTR, smtpDomain) {
+			status.PTRMatches = true
+			status.FCrDNSStatus = "ok"
+		} else {
+			status.FCrDNSStatus = "mismatch"
+		}
+
+		json.NewEncoder(w).Encode(status)
+	})
+
 	mux.HandleFunc("/api/domains", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var domains []string
@@ -167,6 +216,7 @@ func main() {
 			DKIMFound    bool   `json:"dkim_found"`
 			SPFFound     bool   `json:"spf_found"`
 			DMARCFound   bool   `json:"dmarc_found"`
+			SMTPDomain   string `json:"smtp_domain"`
 		}
 
 		var statuses []DomainStatus
@@ -175,6 +225,7 @@ func main() {
 				Domain:       d,
 				DKIMExpected: dkimExpected,
 				DKIMName:     dkimSelector + "._domainkey",
+				SMTPDomain:   smtpDomain,
 			}
 
 			// Check DKIM
