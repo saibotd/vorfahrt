@@ -23,8 +23,11 @@
     <h1>Vorfahrt - Simple Queueing SMTP</h1>
 
     <div class="section" style="background: #fbfbfb; padding: 15px; border: 1px solid #e0e0e0; border-radius: 6px;">
-        <h2 style="margin-top: 0; margin-bottom: 10px;">Server Identity & rDNS (FCrDNS)</h2>
-        <div id="server-status-container">Checking server identity...</div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h2 style="margin: 0;">Server Identity & Connectivity</h2>
+            <button onclick="loadServerStatus(true)" style="font-size: 12px; padding: 3px 8px;">Re-check</button>
+        </div>
+        <div id="server-status-container">Checking server status...</div>
     </div>
 
     <div class="section">
@@ -154,41 +157,65 @@
             }
         }
 
-        async function loadServerStatus() {
+        async function loadServerStatus(recheck = false) {
             const container = document.getElementById('server-status-container');
+            if (recheck) {
+                container.innerHTML = '<span style="color: #666;">Checking server identity and outbound port 25...</span>';
+            }
             try {
-                const res = await fetch('/api/server-status');
+                const url = recheck ? '/api/server-status?recheck=true' : '/api/server-status';
+                const res = await fetch(url);
                 const st = await res.json();
                 
+                let fcrdnsHtml = '';
                 if (st.fcrdns_status === 'ok') {
-                    container.innerHTML = `
+                    fcrdnsHtml = `
                         <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> (IP: <code>${st.ip}</code>)</p>
                         <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <code>${st.ptr}</code> <span class="status-ok">&#10004; Valid FCrDNS</span></p>
                         <small style="color: #666;">Forward-Confirmed Reverse DNS is verified. Recipient mail servers (Gmail, Outlook, etc.) will accept outbound connections from this IP.</small>
                     `;
                 } else if (st.fcrdns_status === 'mismatch') {
-                    container.innerHTML = `
+                    fcrdnsHtml = `
                         <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> (IP: <code>${st.ip}</code>)</p>
                         <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <code>${st.ptr}</code> <span style="color: #d97706; font-weight: bold;">&#9888; Mismatch</span></p>
                         <small style="color: #b45309;"><b>Action Required:</b> In your VPS / hosting control panel (Hetzner, Netcup, DigitalOcean, etc.), set the Reverse DNS (PTR) for <code>${st.ip}</code> to <code>${st.smtp_domain}</code>.</small>
                     `;
                 } else if (st.fcrdns_status === 'missing_ptr') {
-                    container.innerHTML = `
+                    fcrdnsHtml = `
                         <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> (IP: <code>${st.ip}</code>)</p>
                         <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <span class="status-missing">&#10006; Missing PTR Record</span></p>
                         <small style="color: #dc2626;"><b>Action Required:</b> Set the Reverse DNS (PTR) for <code>${st.ip}</code> to <code>${st.smtp_domain}</code> in your hosting provider panel.</small>
                     `;
                 } else if (st.fcrdns_status === 'missing_a') {
-                    container.innerHTML = `
+                    fcrdnsHtml = `
                         <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> <span class="status-missing">&#10006; Missing DNS A Record</span></p>
                         <small style="color: #dc2626;"><b>Action Required:</b> Create an A record for <code>${st.smtp_domain}</code> pointing to your server's public IP.</small>
                     `;
                 } else {
-                    container.innerHTML = `
+                    fcrdnsHtml = `
                         <p style="margin: 4px 0; color: #666;"><code>SMTP_DOMAIN</code> is currently set to <code>${st.smtp_domain || 'localhost'}</code>.</p>
                         <small style="color: #666;">Set <code>SMTP_DOMAIN=mail.yourdomain.com</code> in your environment / docker-compose to establish your server's canonical sending identity.</small>
                     `;
                 }
+
+                let outboundHtml = '';
+                if (st.outbound_port_25_status === 'ok') {
+                    outboundHtml = `
+                        <div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #ddd;">
+                            <p style="margin: 4px 0;"><b>Outbound SMTP (Port 25):</b> <span class="status-ok">&#10004; Open / Reachable</span> <small style="color: #666;">(Target: <code>${st.outbound_port_25_target || 'portquiz.net:25'}</code>)</small></p>
+                            <small style="color: #666;">Your server can establish outgoing TCP connections on port 25 to deliver email to remote mail servers.</small>
+                        </div>
+                    `;
+                } else {
+                    outboundHtml = `
+                        <div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #ddd;">
+                            <p style="margin: 4px 0;"><b>Outbound SMTP (Port 25):</b> <span class="status-missing">&#10006; Blocked / Unreachable</span></p>
+                            <small style="color: #dc2626;"><b>Action Required:</b> Outbound traffic on TCP port 25 is blocked. Most hosting providers (Hetzner, AWS, DigitalOcean, Linode, etc.) block port 25 by default to prevent spam. You must request port 25 unblocking in your provider's support/console or adjust your firewall before emails can be delivered.</small>
+                        </div>
+                    `;
+                }
+
+                container.innerHTML = fcrdnsHtml + outboundHtml;
             } catch (e) {
                 container.innerHTML = '<span class="status-missing">Failed to load server status.</span>';
             }

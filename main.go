@@ -22,7 +22,77 @@ import (
 	"encoding/json"
 	"net"
 	"strings"
+	"sync"
 )
+
+type OutboundStatus struct {
+	Status    string    `json:"status"` // "ok" or "blocked"
+	Target    string    `json:"target,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+var (
+	outboundCheckMu    sync.Mutex
+	lastOutboundResult *OutboundStatus
+)
+
+// checkOutboundPort25 checks whether outbound connections on TCP port 25 can be established.
+// To avoid alerting or spamming actual mail provider filters (Google, Microsoft) with connection probes,
+// it first tests against portquiz.net:25 (a dedicated open service for firewall testing).
+// Only if that fails does it fall back to a standard SMTP host with a polite QUIT command.
+func checkOutboundPort25(force bool) OutboundStatus {
+	outboundCheckMu.Lock()
+	defer outboundCheckMu.Unlock()
+
+	if !force && lastOutboundResult != nil && time.Since(lastOutboundResult.CheckedAt) < 10*time.Minute {
+		return *lastOutboundResult
+	}
+
+	// 1. Primary target: portquiz.net:25
+	conn, err := net.DialTimeout("tcp", "portquiz.net:25", 3*time.Second)
+	if err == nil {
+		conn.Close()
+		res := OutboundStatus{
+			Status:    "ok",
+			Target:    "portquiz.net:25",
+			CheckedAt: time.Now(),
+		}
+		lastOutboundResult = &res
+		return res
+	}
+
+	// 2. Fallback: only if portquiz is unreachable, test standard SMTP server with graceful QUIT
+	fallbackAddr := "smtp.gmail.com:25"
+	conn, fbErr := net.DialTimeout("tcp", fallbackAddr, 3*time.Second)
+	if fbErr == nil {
+		conn.SetDeadline(time.Now().Add(3 * time.Second))
+		buf := make([]byte, 256)
+		conn.Read(buf)
+		conn.Write([]byte("QUIT\r\n"))
+		conn.Close()
+		res := OutboundStatus{
+			Status:    "ok",
+			Target:    fallbackAddr,
+			CheckedAt: time.Now(),
+		}
+		lastOutboundResult = &res
+		return res
+	}
+
+	errMsg := err.Error()
+	if fbErr != nil {
+		errMsg = fbErr.Error()
+	}
+	res := OutboundStatus{
+		Status:    "blocked",
+		Error:     errMsg,
+		CheckedAt: time.Now(),
+	}
+	lastOutboundResult = &res
+	return res
+}
+
 
 //go:embed ui/index.html
 var uiFS embed.FS
@@ -81,14 +151,30 @@ func main() {
 		smtpDomain = "localhost"
 	}
 
+	queueRetentionStr := os.Getenv("QUEUE_RETENTION")
+	queueRetention, err := queue.ParseRetention(queueRetentionStr)
+	if err != nil {
+		log.Printf("Invalid QUEUE_RETENTION %q: %v. Using default 24h.", queueRetentionStr, err)
+		queueRetention = 24 * time.Hour
+	}
+	if queueRetention > 0 {
+		log.Printf("Queue retention set to %s (items older than this will be deleted)", queueRetention)
+	} else {
+		log.Println("Queue retention cleanup disabled (QUEUE_RETENTION=0)")
+	}
+
 	// Start Queue Worker
 	worker := &queue.Worker{
 		DB:         db,
 		DKIMKey:    dkimKey,
 		Selector:   dkimSelector,
 		SMTPDomain: smtpDomain,
+		Retention:  queueRetention,
 	}
 	go worker.Start()
+
+	// Pre-warm outbound port 25 check
+	go checkOutboundPort25(false)
 
 	// TLS config if acme.json is provided
 	var tlsProv *acme.Provider
@@ -155,15 +241,24 @@ func main() {
 
 	mux.HandleFunc("/api/server-status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		forceRecheck := r.URL.Query().Get("recheck") == "true" || r.URL.Query().Get("recheck") == "1"
+		outbound := checkOutboundPort25(forceRecheck)
+
 		status := struct {
-			SMTPDomain   string `json:"smtp_domain"`
-			IP           string `json:"ip"`
-			PTR          string `json:"ptr"`
-			PTRFound     bool   `json:"ptr_found"`
-			PTRMatches   bool   `json:"ptr_matches"`
-			FCrDNSStatus string `json:"fcrdns_status"` // "ok", "mismatch", "missing_ptr", "missing_a", "unconfigured"
+			SMTPDomain           string `json:"smtp_domain"`
+			IP                   string `json:"ip"`
+			PTR                  string `json:"ptr"`
+			PTRFound             bool   `json:"ptr_found"`
+			PTRMatches           bool   `json:"ptr_matches"`
+			FCrDNSStatus         string `json:"fcrdns_status"` // "ok", "mismatch", "missing_ptr", "missing_a", "unconfigured"
+			OutboundPort25Status string `json:"outbound_port_25_status"` // "ok", "blocked"
+			OutboundPort25Target string `json:"outbound_port_25_target,omitempty"`
+			OutboundPort25Error  string `json:"outbound_port_25_error,omitempty"`
 		}{
-			SMTPDomain: smtpDomain,
+			SMTPDomain:           smtpDomain,
+			OutboundPort25Status: outbound.Status,
+			OutboundPort25Target: outbound.Target,
+			OutboundPort25Error:  outbound.Error,
 		}
 
 		if smtpDomain == "" || smtpDomain == "localhost" {

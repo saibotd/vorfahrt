@@ -55,14 +55,16 @@ It embeds a minimal web interface for managing sender accounts, viewing outbound
 - The background `Worker` scans for queued messages every 5 seconds.
 - Outgoing messages are signed using the system DKIM key and configured selector (`DKIM_SELECTOR`).
 - The worker announces `EHLO <SMTP_DOMAIN>`, negotiates `STARTTLS` with remote MX servers if supported, and iterates through discovered MX candidates. Failed attempts increment `attempts` up to 5 retries before marking as `failed`. Once sent, message raw data is purged.
+- **Retention Cleanup**: Expired messages older than `QUEUE_RETENTION` (default `24h`) are automatically purged from the SQLite database every minute. Set to `0` to disable.
 
-### 4. Server Identity & FCrDNS Verification (`main.go`, `ui/index.html`)
-- An IP only has one PTR record. Multi-tenant mail servers verify rDNS at the server infrastructure level:
+### 4. Server Identity, Connectivity & FCrDNS Verification (`main.go`, `ui/index.html`)
+- Multi-tenant mail servers verify rDNS and network readiness at the server infrastructure level:
   - `SMTP_DOMAIN` defines the canonical hostname (e.g., `mail.saibotd.com`).
   - `/api/server-status` resolves `SMTP_DOMAIN` $\rightarrow$ IP, then queries reverse DNS `IP` $\rightarrow$ PTR, verifying FCrDNS.
+  - Tests outbound TCP port 25 connectivity (via dedicated firewall test host `portquiz.net:25` to avoid triggering spam filters on real mail providers, with graceful RFC-compliant fallback and 10-minute caching). Warns when outbound port 25 is blocked by a VPS host.
   - Per-tenant domains only require SPF (`v=spf1 a:<SMTP_DOMAIN> mx ~all`), DKIM, and DMARC.
 
-### 4. Database Migrations
+### 5. Database Migrations
 - GORM auto-migrates `Account` and `Message` tables at startup (`main.go`).
 
 ## Environment Variables
@@ -73,6 +75,7 @@ It embeds a minimal web interface for managing sender accounts, viewing outbound
 | `DATA_DIR` | `data` | Directory where SQLite (`data.db`) and DKIM key (`dkim.key`) reside. |
 | `DKIM_KEY_FILE` | `<DATA_DIR>/dkim.key` | RSA private key file for DKIM. Auto-generated if missing. |
 | `DKIM_SELECTOR` | `mail` | DKIM DNS selector (e.g., `mail._domainkey.<domain>`). |
+| `QUEUE_RETENTION` | `24h` | Duration after which messages are deleted (e.g. `24h`, `48h`, `7d`). Set to `0` to disable. |
 | `WEB_ADDR` | `:8080` | HTTP listen address for Web UI and API. |
 | `WEB_USERNAME` | `admin` | HTTP Basic Auth username for Web UI. |
 | `WEB_PASSWORD` | *(empty)* | HTTP Basic Auth password. If unset, auth is disabled. |

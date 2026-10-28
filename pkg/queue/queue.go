@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/smtp"
@@ -22,10 +23,52 @@ type Worker struct {
 	DKIMKey    *rsa.PrivateKey
 	Selector   string
 	SMTPDomain string
+	Retention  time.Duration
+}
+
+// ParseRetention parses a duration for queue message retention (e.g. "24h", "2d", "168h", "24").
+// An empty string defaults to 24 hours. "0", "disable", or "none" disables retention cleanup (returns 0).
+func ParseRetention(val string) (time.Duration, error) {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return 24 * time.Hour, nil
+	}
+	if val == "0" || strings.EqualFold(val, "disable") || strings.EqualFold(val, "disabled") || strings.EqualFold(val, "none") || strings.EqualFold(val, "false") {
+		return 0, nil
+	}
+	if d, err := time.ParseDuration(val); err == nil {
+		if d < 0 {
+			return 0, errors.New("retention duration cannot be negative")
+		}
+		return d, nil
+	}
+	if strings.HasSuffix(strings.ToLower(val), "d") {
+		daysStr := val[:len(val)-1]
+		var days int
+		if _, err := fmt.Sscanf(daysStr, "%d", &days); err == nil && days >= 0 {
+			return time.Duration(days) * 24 * time.Hour, nil
+		}
+	}
+	var hours int
+	if _, err := fmt.Sscanf(val, "%d", &hours); err == nil && hours >= 0 {
+		return time.Duration(hours) * time.Hour, nil
+	}
+	return 0, fmt.Errorf("invalid retention duration: %s", val)
 }
 
 func (wk *Worker) Start() {
+	var lastCleanup time.Time
 	for {
+		if wk.Retention > 0 && time.Since(lastCleanup) >= 1*time.Minute {
+			cutoff := time.Now().Add(-wk.Retention)
+			if res := wk.DB.Where("created_at < ?", cutoff).Delete(&models.Message{}); res.Error != nil {
+				log.Println("Error cleaning up expired queue items:", res.Error)
+			} else if res.RowsAffected > 0 {
+				log.Printf("Cleaned up %d expired queue item(s) older than %s", res.RowsAffected, wk.Retention)
+			}
+			lastCleanup = time.Now()
+		}
+
 		var messages []models.Message
 		wk.DB.Where("status = ?", "queued").Find(&messages)
 

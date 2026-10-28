@@ -33,6 +33,8 @@ services:
       # DKIM key configuration (auto-generated if missing)
       - DKIM_KEY_FILE=/data/dkim.key
       - DKIM_SELECTOR=mail
+      # Queue item retention (auto-deletes messages older than this duration, e.g. 24h, 48h, 7d)
+      - QUEUE_RETENTION=24h
       # Web UI credentials and address
       - WEB_ADDR=:8080
       - WEB_USERNAME=admin
