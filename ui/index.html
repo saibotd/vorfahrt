@@ -1,6 +1,8 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vorfahrt</title>
     <style>
         body { font-family: sans-serif; margin: 20px; }
@@ -161,24 +163,24 @@
                 if (st.fcrdns_status === 'ok') {
                     container.innerHTML = `
                         <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> (IP: <code>${st.ip}</code>)</p>
-                        <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <code>${st.ptr}</code> <span class="status-ok">✔ Valid FCrDNS</span></p>
+                        <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <code>${st.ptr}</code> <span class="status-ok">&#10004; Valid FCrDNS</span></p>
                         <small style="color: #666;">Forward-Confirmed Reverse DNS is verified. Recipient mail servers (Gmail, Outlook, etc.) will accept outbound connections from this IP.</small>
                     `;
                 } else if (st.fcrdns_status === 'mismatch') {
                     container.innerHTML = `
                         <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> (IP: <code>${st.ip}</code>)</p>
-                        <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <code>${st.ptr}</code> <span style="color: #d97706; font-weight: bold;">⚠ Mismatch</span></p>
+                        <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <code>${st.ptr}</code> <span style="color: #d97706; font-weight: bold;">&#9888; Mismatch</span></p>
                         <small style="color: #b45309;"><b>Action Required:</b> In your VPS / hosting control panel (Hetzner, Netcup, DigitalOcean, etc.), set the Reverse DNS (PTR) for <code>${st.ip}</code> to <code>${st.smtp_domain}</code>.</small>
                     `;
                 } else if (st.fcrdns_status === 'missing_ptr') {
                     container.innerHTML = `
                         <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> (IP: <code>${st.ip}</code>)</p>
-                        <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <span class="status-missing">✖ Missing PTR Record</span></p>
+                        <p style="margin: 4px 0;"><b>Reverse DNS (PTR):</b> <span class="status-missing">&#10006; Missing PTR Record</span></p>
                         <small style="color: #dc2626;"><b>Action Required:</b> Set the Reverse DNS (PTR) for <code>${st.ip}</code> to <code>${st.smtp_domain}</code> in your hosting provider panel.</small>
                     `;
                 } else if (st.fcrdns_status === 'missing_a') {
                     container.innerHTML = `
-                        <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> <span class="status-missing">✖ Missing DNS A Record</span></p>
+                        <p style="margin: 4px 0;"><b>Primary Hostname (EHLO):</b> <code>${st.smtp_domain}</code> <span class="status-missing">&#10006; Missing DNS A Record</span></p>
                         <small style="color: #dc2626;"><b>Action Required:</b> Create an A record for <code>${st.smtp_domain}</code> pointing to your server's public IP.</small>
                     `;
                 } else {

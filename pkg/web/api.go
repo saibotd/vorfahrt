@@ -27,7 +27,7 @@ func generatePassword(length int) (string, error) {
 
 func RegisterHandlers(mux *http.ServeMux, db *gorm.DB, validDomains func() []string) {
 	mux.HandleFunc("/api/accounts", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		if r.Method == http.MethodGet {
 			var accs []models.Account
 			db.Order("id desc").Find(&accs)
@@ -98,7 +98,7 @@ func RegisterHandlers(mux *http.ServeMux, db *gorm.DB, validDomains func() []str
 	})
 
 	mux.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		if r.Method == http.MethodGet {
 			var msgs []models.Message
 			db.Order("created_at desc").Limit(50).Find(&msgs)
