@@ -16,15 +16,16 @@ import (
 )
 
 type MessageSummary struct {
-	ID        uint      `json:"id"`
-	Sender    string    `json:"sender"`
-	Recipient string    `json:"recipient"`
-	Subject   string    `json:"subject"`
-	Status    string    `json:"status"`
-	Attempts  int       `json:"attempts"`
-	Error     string    `json:"error"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          uint       `json:"id"`
+	Sender      string     `json:"sender"`
+	Recipient   string     `json:"recipient"`
+	Subject     string     `json:"subject"`
+	Status      string     `json:"status"`
+	Attempts    int        `json:"attempts"`
+	Error       string     `json:"error"`
+	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 type MessageDetailResponse struct {
@@ -35,6 +36,7 @@ type MessageDetailResponse struct {
 	Status      string            `json:"status"`
 	Attempts    int               `json:"attempts"`
 	Error       string            `json:"error"`
+	NextRetryAt *time.Time        `json:"next_retry_at,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
 	HasData     bool              `json:"has_data"`
@@ -87,15 +89,16 @@ func handleMessages(db *gorm.DB) http.HandlerFunc {
 			}
 
 			summaries[i] = MessageSummary{
-				ID:        msg.ID,
-				Sender:    msg.From,
-				Recipient: msg.To,
-				Subject:   subj,
-				Status:    msg.Status,
-				Attempts:  msg.Attempts,
-				Error:     msg.Error,
-				CreatedAt: msg.CreatedAt,
-				UpdatedAt: msg.UpdatedAt,
+				ID:          msg.ID,
+				Sender:      msg.From,
+				Recipient:   msg.To,
+				Subject:     subj,
+				Status:      msg.Status,
+				Attempts:    msg.Attempts,
+				Error:       msg.Error,
+				NextRetryAt: msg.NextRetryAt,
+				CreatedAt:   msg.CreatedAt,
+				UpdatedAt:   msg.UpdatedAt,
 			}
 		}
 
@@ -140,17 +143,18 @@ func formatMessageDetail(msg *models.Message, db *gorm.DB) MessageDetailResponse
 	}
 
 	resp := MessageDetailResponse{
-		ID:        msg.ID,
-		Sender:    msg.From,
-		Recipient: msg.To,
-		Subject:   subj,
-		Status:    msg.Status,
-		Attempts:  msg.Attempts,
-		Error:     msg.Error,
-		CreatedAt: msg.CreatedAt,
-		UpdatedAt: msg.UpdatedAt,
-		HasData:   len(msg.Data) > 0,
-		SizeBytes: len(msg.Data),
+		ID:          msg.ID,
+		Sender:      msg.From,
+		Recipient:   msg.To,
+		Subject:     subj,
+		Status:      msg.Status,
+		Attempts:    msg.Attempts,
+		Error:       msg.Error,
+		NextRetryAt: msg.NextRetryAt,
+		CreatedAt:   msg.CreatedAt,
+		UpdatedAt:   msg.UpdatedAt,
+		HasData:     len(msg.Data) > 0,
+		SizeBytes:   len(msg.Data),
 	}
 
 	if len(msg.Data) > 0 {

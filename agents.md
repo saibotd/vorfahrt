@@ -57,7 +57,7 @@ It embeds a minimal web interface for managing sender accounts, viewing outbound
 - Outgoing messages submitted via SMTP are stored in the SQLite database with `status = "queued"`.
 - The background `Worker` scans for queued messages every 5 seconds.
 - Outgoing messages are signed using the system DKIM key and configured selector (`DKIM_SELECTOR`).
-- The worker announces `EHLO <SMTP_DOMAIN>`, negotiates `STARTTLS` with remote MX servers if supported, and iterates through discovered MX candidates. Failed attempts increment `attempts` up to 5 retries before marking as `failed`. Once sent, message raw data is purged.
+- The worker announces `EHLO <SMTP_DOMAIN>`, negotiates `STARTTLS` with remote MX servers if supported, and iterates through discovered MX candidates. Delivery failures with fatal errors (5xx SMTP status, invalid recipient syntax, non-existent domain) immediately mark the message as `failed` without retrying. Transient failures (4xx status, network timeouts) are retried with spaced backoff (1m, 2m, 4m, 8m) up to 5 attempts before marking as `failed`. Once sent, message raw data is purged.
 - **Retention Cleanup**: Expired messages older than `QUEUE_RETENTION` (default `24h`) are automatically purged from the SQLite database every minute. Set to `0` to disable.
 
 ### 4. Server Identity, Connectivity & FCrDNS Verification (`main.go`, `ui/index.html`)

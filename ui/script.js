@@ -123,6 +123,7 @@ async function showMessageDetail(id) {
                 <tr><th>From</th><td><code>${escapeHtml(msg.sender)}</code></td></tr>
                 <tr><th>To</th><td><code>${escapeHtml(msg.recipient)}</code></td></tr>
                 <tr><th>Attempts</th><td>${msg.attempts || 0} / 5</td></tr>
+                ${msg.next_retry_at && msg.status === 'queued' ? `<tr><th>Next Retry</th><td>${new Date(msg.next_retry_at).toLocaleString()}</td></tr>` : ''}
                 <tr><th>Submitted</th><td>${new Date(msg.created_at).toLocaleString()}</td></tr>
                 <tr><th>Last Updated</th><td>${new Date(msg.updated_at).toLocaleString()}</td></tr>
                 ${msg.size_bytes > 0 ? `<tr><th>Payload Size</th><td>${msg.size_bytes} bytes</td></tr>` : ''}

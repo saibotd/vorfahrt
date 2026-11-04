@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"net/smtp"
+	"net/textproto"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,11 +21,14 @@ import (
 )
 
 type Worker struct {
-	DB         *gorm.DB
-	DKIMKey    *rsa.PrivateKey
-	Selector   string
-	SMTPDomain string
-	Retention  time.Duration
+	DB          *gorm.DB
+	DKIMKey     *rsa.PrivateKey
+	Selector    string
+	SMTPDomain  string
+	Retention   time.Duration
+	RetryDelay  func(attempts int) time.Duration
+	DeliverFunc func(addr, from, to string, data []byte) error
+	LookupMX    func(domain string) ([]*net.MX, error)
 }
 
 // ParseRetention parses a duration for queue message retention (e.g. "24h", "2d", "168h", "24").
@@ -56,6 +61,81 @@ func ParseRetention(val string) (time.Duration, error) {
 	return 0, fmt.Errorf("invalid retention duration: %s", val)
 }
 
+var (
+	smtp5xxRegex = regexp.MustCompile(`(^|\s)5\d{2}([ \-\r\n]|$)`)
+	smtp4xxRegex = regexp.MustCompile(`(^|\s)4\d{2}([ \-\r\n]|$)`)
+)
+
+// DefaultRetryDelay returns the backoff delay for the given attempt count.
+// Attempt 1 -> 1m, Attempt 2 -> 2m, Attempt 3 -> 4m, Attempt 4 -> 8m, Attempt 5+ -> 15m.
+func DefaultRetryDelay(attempts int) time.Duration {
+	switch attempts {
+	case 1:
+		return 1 * time.Minute
+	case 2:
+		return 2 * time.Minute
+	case 3:
+		return 4 * time.Minute
+	case 4:
+		return 8 * time.Minute
+	default:
+		return 15 * time.Minute
+	}
+}
+
+func (wk *Worker) getRetryDelay(attempts int) time.Duration {
+	if wk.RetryDelay != nil {
+		return wk.RetryDelay(attempts)
+	}
+	return DefaultRetryDelay(attempts)
+}
+
+// IsFatalError determines if an error represents a permanent delivery failure that should not be retried.
+func IsFatalError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// 1. SMTP protocol error codes via textproto.Error
+	var tpErr *textproto.Error
+	if errors.As(err, &tpErr) {
+		if tpErr.Code >= 500 && tpErr.Code <= 599 {
+			return true
+		}
+		if tpErr.Code >= 400 && tpErr.Code <= 499 {
+			return false
+		}
+	}
+
+	// 2. DNS errors: NXDOMAIN / no such host is fatal, while timeouts or temporary errors are not
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		if dnsErr.IsNotFound {
+			return true
+		}
+		if !dnsErr.IsTimeout && !dnsErr.Temporary() && strings.Contains(strings.ToLower(dnsErr.Err), "no such host") {
+			return true
+		}
+	}
+
+	// 3. String-based matching for recipient syntax or 5xx codes
+	errMsg := strings.TrimSpace(err.Error())
+	if strings.Contains(strings.ToLower(errMsg), "invalid recipient") {
+		return true
+	}
+
+	// If 4xx is present in the error string and no 5xx, treat as temporary
+	if smtp4xxRegex.MatchString(errMsg) && !smtp5xxRegex.MatchString(errMsg) {
+		return false
+	}
+
+	if smtp5xxRegex.MatchString(errMsg) {
+		return true
+	}
+
+	return false
+}
+
 func (wk *Worker) Start() {
 	var lastCleanup time.Time
 	for {
@@ -69,47 +149,71 @@ func (wk *Worker) Start() {
 			lastCleanup = time.Now()
 		}
 
-		var messages []models.Message
-		wk.DB.Where("status = ?", "queued").Find(&messages)
-
-		for _, msg := range messages {
-			if msg.Subject == "" && len(msg.Data) > 0 {
-				msg.Subject = models.ParseSubject(msg.Data)
-			}
-			msg.Attempts++
-			err := wk.processMessage(&msg)
-			if err != nil {
-				if msg.Attempts >= 5 {
-					msg.Status = "failed"
-				}
-				msg.Error = err.Error()
-			} else {
-				msg.Status = "sent"
-				msg.Data = nil // clear data on success to save space
-				msg.Error = ""
-			}
-			wk.DB.Save(&msg)
-		}
+		wk.ProcessOnce()
 
 		time.Sleep(5 * time.Second)
 	}
 }
 
+// ProcessOnce scans the queue for messages due for processing and attempts delivery.
+func (wk *Worker) ProcessOnce() {
+	var messages []models.Message
+	now := time.Now().UTC()
+	wk.DB.Where("status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)", "queued", now).Find(&messages)
+
+	for _, msg := range messages {
+		if msg.Subject == "" && len(msg.Data) > 0 {
+			msg.Subject = models.ParseSubject(msg.Data)
+		}
+		msg.Attempts++
+		err := wk.processMessage(&msg)
+		if err != nil {
+			msg.Error = err.Error()
+			if IsFatalError(err) || msg.Attempts >= 5 {
+				msg.Status = "failed"
+				msg.NextRetryAt = nil
+			} else {
+				delay := wk.getRetryDelay(msg.Attempts)
+				nextRetry := time.Now().UTC().Add(delay)
+				msg.NextRetryAt = &nextRetry
+			}
+		} else {
+			msg.Status = "sent"
+			msg.Data = nil // clear data on success to save space
+			msg.Error = ""
+			msg.NextRetryAt = nil
+		}
+		wk.DB.Save(&msg)
+	}
+}
+
 func (wk *Worker) processMessage(msg *models.Message) error {
 	parts := strings.Split(msg.To, "@")
-	if len(parts) != 2 {
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return errors.New("invalid recipient address")
 	}
 	domain := parts[1]
 
-	mxs, err := net.LookupMX(domain)
 	var addrs []string
-	if err == nil && len(mxs) > 0 {
-		for _, mx := range mxs {
-			host := strings.TrimSuffix(mx.Host, ".")
-			addrs = append(addrs, net.JoinHostPort(host, "25"))
+	if wk.LookupMX != nil {
+		mxs, err := wk.LookupMX(domain)
+		if err == nil && len(mxs) > 0 {
+			for _, mx := range mxs {
+				host := strings.TrimSuffix(mx.Host, ".")
+				addrs = append(addrs, net.JoinHostPort(host, "25"))
+			}
 		}
 	} else {
+		mxs, err := net.LookupMX(domain)
+		if err == nil && len(mxs) > 0 {
+			for _, mx := range mxs {
+				host := strings.TrimSuffix(mx.Host, ".")
+				addrs = append(addrs, net.JoinHostPort(host, "25"))
+			}
+		}
+	}
+
+	if len(addrs) == 0 {
 		addrs = append(addrs, net.JoinHostPort(domain, "25"))
 	}
 
@@ -135,12 +239,20 @@ func (wk *Worker) processMessage(msg *models.Message) error {
 	var lastErr error
 	for _, addr := range addrs {
 		log.Printf("Delivering to %s via %s", msg.To, addr)
-		err := wk.deliverToAddr(addr, msg.From, msg.To, msgData)
+		var err error
+		if wk.DeliverFunc != nil {
+			err = wk.DeliverFunc(addr, msg.From, msg.To, msgData)
+		} else {
+			err = wk.deliverToAddr(addr, msg.From, msg.To, msgData)
+		}
 		if err == nil {
 			return nil
 		}
 		lastErr = err
 		log.Printf("Delivery to %s via %s failed: %v", msg.To, addr, err)
+		if IsFatalError(err) {
+			break
+		}
 	}
 
 	return lastErr
