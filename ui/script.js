@@ -280,6 +280,17 @@ async function loadDomains() {
             const spfStatus = d.spf_found ? '<span class="badge badge-positive">Found</span>' : '<span class="badge badge-negative">Missing</span>';
             const dkimStatus = d.dkim_found ? '<span class="badge badge-positive">Found</span>' : '<span class="badge badge-negative">Missing</span>';
             const dmarcStatus = d.dmarc_found ? '<span class="badge badge-positive">Found</span>' : '<span class="badge badge-negative">Missing</span>';
+            let bimiStatus = d.bimi_found ? '<span class="badge badge-positive">Found</span>' : '<span class="badge badge-negative">Missing</span>';
+            if (d.bimi_found) {
+                bimiStatus += d.bimi_svg_ok
+                    ? ' <span class="badge badge-positive">SVG Tiny PS</span>'
+                    : ` <span class="badge badge-negative" title="${escapeHtml(d.bimi_svg_error || 'Invalid SVG')}">SVG Invalid</span>`;
+                if (d.bimi_pem_set) {
+                    bimiStatus += d.bimi_pem_ok
+                        ? ' <span class="badge badge-positive">PEM 200</span>'
+                        : ' <span class="badge badge-negative">PEM Error</span>';
+                }
+            }
 
             // Convert to base64 or stringify safely to pass into inline function
             const domainJson = encodeURIComponent(JSON.stringify(d));
@@ -289,6 +300,7 @@ async function loadDomains() {
                 <td>${spfStatus}</td>
                 <td>${dkimStatus}</td>
                 <td>${dmarcStatus}</td>
+                <td>${bimiStatus}</td>
                 <td><button class="btn-sm" onclick="event.stopPropagation(); showInstructions('${domainJson}')">DNS Setup</button></td>
             </tr>`;
 
@@ -301,7 +313,7 @@ async function loadDomains() {
             domainSelect.value = currentSelected;
         }
     } else {
-        tbody.innerHTML = '<tr><td colspan="5"><i>No domains found (ACME_FILE not set or empty)</i></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6"><i>No domains found (ACME_FILE not set or empty)</i></td></tr>';
         const opt = document.createElement('option');
         opt.value = '';
         opt.textContent = '-- No domains available --';
@@ -335,6 +347,12 @@ function showInstructions(encodedData) {
         <h4 style="margin: 16px 0 6px 0;">3. DMARC</h4>
         <p class="status-line"><small class="text-muted">Host / Name: <code>_dmarc</code></small></p>
         <div class="code-box">v=DMARC1; p=none;</div>
+
+        <h4 style="margin: 16px 0 6px 0;">4. BIMI (Optional)</h4>
+        <p class="status-line"><small class="text-muted">Host / Name: <code>default._bimi</code> (requires DMARC <code>p=quarantine</code> or <code>p=reject</code>)</small></p>
+        <div class="code-box">v=BIMI1; l=https://${escapeHtml(d.domain)}/logo.svg;</div>
+        ${d.bimi_found && !d.bimi_svg_ok && d.bimi_svg_error ? `<p class="status-line"><small class="status-err">SVG check failed: ${escapeHtml(d.bimi_svg_error)}</small></p>` : ''}
+        ${d.bimi_found && d.bimi_pem_set && !d.bimi_pem_ok ? `<p class="status-line"><small class="status-err">PEM URL did not return HTTP 200.</small></p>` : ''}
     `;
 
     if (!dialog.open) {

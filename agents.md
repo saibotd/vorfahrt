@@ -6,7 +6,7 @@ Developer and agent guide for the **Vorfahrt** codebase.
 
 Vorfahrt is a lightweight, self-hosted queueing SMTP server written in Go. It is designed to run in Docker alongside Traefik, utilizing Traefik's `acme.json` storage for TLS certificates and sender domain discovery.
 
-It embeds a minimal web interface for managing sender accounts, viewing outbound mail queues, verifying server Forward-Confirmed Reverse DNS (FCrDNS), and inspecting DNS records (SPF, DKIM, DMARC) for each configured domain.
+It embeds a minimal web interface for managing sender accounts, viewing outbound mail queues, verifying server Forward-Confirmed Reverse DNS (FCrDNS), and inspecting DNS records (SPF, DKIM, DMARC, BIMI) for each configured domain.
 
 ## Tech Stack & Architecture
 
