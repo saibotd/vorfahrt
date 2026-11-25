@@ -11,6 +11,7 @@ import (
 	"net/smtp"
 	"net/textproto"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,21 +50,19 @@ func ParseRetention(val string) (time.Duration, error) {
 	}
 	if strings.HasSuffix(strings.ToLower(val), "d") {
 		daysStr := val[:len(val)-1]
-		var days int
-		if _, err := fmt.Sscanf(daysStr, "%d", &days); err == nil && days >= 0 {
+		if days, err := strconv.Atoi(daysStr); err == nil && days >= 0 {
 			return time.Duration(days) * 24 * time.Hour, nil
 		}
 	}
-	var hours int
-	if _, err := fmt.Sscanf(val, "%d", &hours); err == nil && hours >= 0 {
+	if hours, err := strconv.Atoi(val); err == nil && hours >= 0 {
 		return time.Duration(hours) * time.Hour, nil
 	}
 	return 0, fmt.Errorf("invalid retention duration: %s", val)
 }
 
 var (
-	smtp5xxRegex = regexp.MustCompile(`(^|\s)5\d{2}([ \-\r\n]|$)`)
-	smtp4xxRegex = regexp.MustCompile(`(^|\s)4\d{2}([ \-\r\n]|$)`)
+	smtp5xxRegex = regexp.MustCompile(`(?i)^(?:smtp:\s*)?5\d{2}(?:[ \-\r\n]|$)`)
+	smtp4xxRegex = regexp.MustCompile(`(?i)^(?:smtp:\s*)?4\d{2}(?:[ \-\r\n]|$)`)
 )
 
 // DefaultRetryDelay returns the backoff delay for the given attempt count.
@@ -118,14 +117,17 @@ func IsFatalError(err error) bool {
 		}
 	}
 
-	// 3. String-based matching for recipient syntax or 5xx codes
+	// 3. String-based matching for recipient syntax, Null MX, or 5xx codes
 	errMsg := strings.TrimSpace(err.Error())
-	if strings.Contains(strings.ToLower(errMsg), "invalid recipient") {
+	lowerErr := strings.ToLower(errMsg)
+	if strings.Contains(lowerErr, "invalid recipient") ||
+		strings.Contains(lowerErr, "null mx") ||
+		strings.Contains(lowerErr, "does not accept mail") {
 		return true
 	}
 
-	// If 4xx is present in the error string and no 5xx, treat as temporary
-	if smtp4xxRegex.MatchString(errMsg) && !smtp5xxRegex.MatchString(errMsg) {
+	// If 4xx is present at the start of the error string, treat as temporary
+	if smtp4xxRegex.MatchString(errMsg) {
 		return false
 	}
 
@@ -183,7 +185,9 @@ func (wk *Worker) ProcessOnce() {
 			msg.Error = ""
 			msg.NextRetryAt = nil
 		}
-		wk.DB.Save(&msg)
+		if err := wk.DB.Save(&msg).Error; err != nil {
+			log.Printf("Error saving message %d: %v", msg.ID, err)
+		}
 	}
 }
 
@@ -194,22 +198,32 @@ func (wk *Worker) processMessage(msg *models.Message) error {
 	}
 	domain := parts[1]
 
-	var addrs []string
+	lookupMX := net.LookupMX
 	if wk.LookupMX != nil {
-		mxs, err := wk.LookupMX(domain)
-		if err == nil && len(mxs) > 0 {
-			for _, mx := range mxs {
-				host := strings.TrimSuffix(mx.Host, ".")
-				addrs = append(addrs, net.JoinHostPort(host, "25"))
-			}
+		lookupMX = wk.LookupMX
+	}
+
+	var addrs []string
+	mxs, mxErr := lookupMX(domain)
+	if mxErr != nil {
+		var dnsErr *net.DNSError
+		if !errors.As(mxErr, &dnsErr) || !dnsErr.IsNotFound {
+			return mxErr
 		}
-	} else {
-		mxs, err := net.LookupMX(domain)
-		if err == nil && len(mxs) > 0 {
-			for _, mx := range mxs {
-				host := strings.TrimSuffix(mx.Host, ".")
-				addrs = append(addrs, net.JoinHostPort(host, "25"))
+	} else if len(mxs) > 0 {
+		// RFC 7505: a single MX record with host "." (Null MX) means the domain does not accept mail.
+		if len(mxs) == 1 && strings.TrimSuffix(mxs[0].Host, ".") == "" {
+			return errors.New("domain does not accept mail (Null MX)")
+		}
+		for _, mx := range mxs {
+			host := strings.TrimSuffix(mx.Host, ".")
+			if host == "" {
+				continue
 			}
+			addrs = append(addrs, net.JoinHostPort(host, "25"))
+		}
+		if len(addrs) == 0 {
+			return errors.New("domain does not accept mail (Null MX)")
 		}
 	}
 
@@ -259,16 +273,28 @@ func (wk *Worker) processMessage(msg *models.Message) error {
 }
 
 func (wk *Worker) deliverToAddr(addr, from, to string, data []byte) error {
+	startTLSFailed, err := wk.attemptDelivery(addr, from, to, data, false)
+	if err != nil && startTLSFailed {
+		host, _, _ := net.SplitHostPort(addr)
+		log.Printf("STARTTLS with %s failed (%v); retrying with opportunistic TLS on a new connection", host, err)
+		_, err = wk.attemptDelivery(addr, from, to, data, true)
+	}
+	return err
+}
+
+func (wk *Worker) attemptDelivery(addr, from, to string, data []byte, insecureTLS bool) (startTLSFailed bool, err error) {
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
-		return err
+		return false, err
 	}
+	// Bound the total duration of the SMTP session so a stalled MX cannot freeze the queue worker.
+	_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
 
 	host, _, _ := net.SplitHostPort(addr)
 	c, err := smtp.NewClient(conn, host)
 	if err != nil {
 		conn.Close()
-		return err
+		return false, err
 	}
 	defer c.Close()
 
@@ -277,34 +303,40 @@ func (wk *Worker) deliverToAddr(addr, from, to string, data []byte) error {
 		helloHost = "localhost"
 	}
 	if err := c.Hello(helloHost); err != nil {
-		return err
+		return false, err
 	}
 
 	if ok, _ := c.Extension("STARTTLS"); ok {
 		tlsConfig := &tls.Config{
-			ServerName: host,
+			ServerName:         host,
+			InsecureSkipVerify: insecureTLS,
 		}
 		if err := c.StartTLS(tlsConfig); err != nil {
-			log.Printf("STARTTLS with %s warning: %v", host, err)
+			return true, err
 		}
 	}
 
 	if err := c.Mail(from); err != nil {
-		return err
+		return false, err
 	}
 	if err := c.Rcpt(to); err != nil {
-		return err
+		return false, err
 	}
 	w, err := c.Data()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if _, err := w.Write(data); err != nil {
-		return err
+		return false, err
 	}
 	if err := w.Close(); err != nil {
-		return err
+		return false, err
 	}
 
-	return c.Quit()
+	// The remote server has already accepted the message (250 OK).
+	// Ignore QUIT errors so a server closing early does not trigger duplicate retries.
+	if err := c.Quit(); err != nil {
+		log.Printf("SMTP QUIT with %s warning: %v", host, err)
+	}
+	return false, nil
 }

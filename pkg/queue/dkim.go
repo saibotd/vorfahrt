@@ -10,7 +10,10 @@ import (
 	"os"
 )
 
-func LoadOrGenerateDKIMKey(path string) (*rsa.PrivateKey, error) {
+func LoadOrGenerateDKIMKey(path, selector string) (*rsa.PrivateKey, error) {
+	if selector == "" {
+		selector = "mail"
+	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		log.Println("No DKIM key found. Generating a new 2048-bit RSA key...")
 		key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -24,7 +27,7 @@ func LoadOrGenerateDKIMKey(path string) (*rsa.PrivateKey, error) {
 			Bytes: keyBytes,
 		}
 
-		file, err := os.Create(path)
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 		if err != nil {
 			return nil, err
 		}
@@ -41,7 +44,7 @@ func LoadOrGenerateDKIMKey(path string) (*rsa.PrivateKey, error) {
 			log.Println("DKIM Key generated successfully!")
 			log.Println("Please add the following TXT record to your domain's DNS:")
 			log.Println("")
-			log.Printf("Name: mail._domainkey")
+			log.Printf("Name: %s._domainkey", selector)
 			log.Printf("Value: v=DKIM1; k=rsa; p=%s", pubKeyBase64)
 			log.Println("==================================================================")
 		}

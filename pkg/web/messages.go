@@ -74,25 +74,16 @@ func handleMessages(db *gorm.DB) http.HandlerFunc {
 		}
 
 		var msgs []models.Message
-		db.Order("created_at desc").Limit(50).Find(&msgs)
+		db.Omit("data").Order("created_at desc").Limit(50).Find(&msgs)
 
 		summaries := make([]MessageSummary, len(msgs))
 		for i := range msgs {
 			msg := &msgs[i]
-			subj := msg.Subject
-			if subj == "" && len(msg.Data) > 0 {
-				subj = models.ParseSubject(msg.Data)
-				if subj != "" {
-					msg.Subject = subj
-					db.Model(&models.Message{}).Where("id = ?", msg.ID).Update("subject", subj)
-				}
-			}
-
 			summaries[i] = MessageSummary{
 				ID:          msg.ID,
 				Sender:      msg.From,
 				Recipient:   msg.To,
-				Subject:     subj,
+				Subject:     msg.Subject,
 				Status:      msg.Status,
 				Attempts:    msg.Attempts,
 				Error:       msg.Error,

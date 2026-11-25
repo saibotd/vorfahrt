@@ -1,11 +1,13 @@
 package smtp
 
 import (
+	"crypto/subtle"
 	"errors"
 	"io"
 	"log"
 	"strings"
 
+	"vorfahrt/pkg/acme"
 	"vorfahrt/pkg/models"
 
 	"github.com/emersion/go-sasl"
@@ -38,27 +40,27 @@ func (s *Session) AuthMechanisms() []string {
 	return []string{sasl.Plain, sasl.Login}
 }
 
-func (s *Session) Auth(mech string) (sasl.Server, error) {
-	authenticate := func(username, password string) error {
-		var acc models.Account
-		if err := s.db.Where("username = ?", username).First(&acc).Error; err != nil {
-			return errors.New("Invalid username or password")
-		}
-		if acc.Password != password {
-			return errors.New("Invalid username or password")
-		}
-		s.username = username
-		s.account = &acc
-		return nil
+func (s *Session) authenticate(username, password string) error {
+	var acc models.Account
+	if err := s.db.Where("username = ?", username).First(&acc).Error; err != nil {
+		return errors.New("Invalid username or password")
 	}
+	if subtle.ConstantTimeCompare([]byte(acc.Password), []byte(password)) != 1 {
+		return errors.New("Invalid username or password")
+	}
+	s.username = username
+	s.account = &acc
+	return nil
+}
 
+func (s *Session) Auth(mech string) (sasl.Server, error) {
 	switch mech {
 	case sasl.Plain:
 		return sasl.NewPlainServer(func(identity, username, password string) error {
-			return authenticate(username, password)
+			return s.authenticate(username, password)
 		}), nil
 	case sasl.Login:
-		return &loginServer{authenticate: authenticate}, nil
+		return &loginServer{authenticate: s.authenticate}, nil
 	default:
 		return nil, smtp.ErrAuthUnknownMechanism
 	}
@@ -94,16 +96,7 @@ func (a *loginServer) Next(response []byte) (challenge []byte, done bool, err er
 }
 
 func (s *Session) AuthPlain(username, password string) error {
-	var acc models.Account
-	if err := s.db.Where("username = ?", username).First(&acc).Error; err != nil {
-		return errors.New("Invalid username or password")
-	}
-	if acc.Password != password {
-		return errors.New("Invalid username or password")
-	}
-	s.username = username
-	s.account = &acc
-	return nil
+	return s.authenticate(username, password)
 }
 
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
@@ -112,23 +105,23 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	}
 
 	parts := strings.Split(from, "@")
-	if len(parts) != 2 {
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return errors.New("Invalid sender address")
 	}
 	senderDomain := parts[1]
 
 	// Verify sender domain matches the account's tethered domain
-	if s.account.Domain != "" && !strings.EqualFold(s.account.Domain, senderDomain) {
+	if s.account.Domain != "" && !acme.MatchDomain(s.account.Domain, senderDomain) {
 		return errors.New("Sender domain not allowed for this account")
 	}
-	
-	// Sender Validation
+
+	// Sender Validation (only enforced when a domain provider is configured)
 	if s.validDomains != nil {
 		domains := s.validDomains()
 		if len(domains) > 0 {
 			valid := false
 			for _, d := range domains {
-				if strings.EqualFold(d, senderDomain) {
+				if acme.MatchDomain(d, senderDomain) {
 					valid = true
 					break
 				}
@@ -147,6 +140,14 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 }
 
 func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
+	parts := strings.Split(to, "@")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return &smtp.SMTPError{
+			Code:         501,
+			EnhancedCode: smtp.EnhancedCode{5, 1, 3},
+			Message:      "Invalid recipient address",
+		}
+	}
 	s.to = append(s.to, to)
 	return nil
 }
@@ -158,19 +159,25 @@ func (s *Session) Data(r io.Reader) error {
 	}
 
 	subject := models.ParseSubject(data)
-	
-	for _, to := range s.to {
-		msg := models.Message{
-			From:    s.from,
-			To:      to,
-			Subject: subject,
-			Data:    data,
-			Status:  "queued",
+
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		for _, to := range s.to {
+			msg := models.Message{
+				From:    s.from,
+				To:      to,
+				Subject: subject,
+				Data:    data,
+				Status:  "queued",
+			}
+			if err := tx.Create(&msg).Error; err != nil {
+				return err
+			}
 		}
-		if err := s.db.Create(&msg).Error; err != nil {
-			log.Println("Error saving message:", err)
-			return errors.New("Internal server error")
-		}
+		return nil
+	})
+	if err != nil {
+		log.Println("Error saving message:", err)
+		return errors.New("Internal server error")
 	}
 
 	return nil

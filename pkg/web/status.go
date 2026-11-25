@@ -109,21 +109,52 @@ func handleServerStatus(smtpDomain string) http.HandlerFunc {
 			return
 		}
 
-		status.IP = ips[0].String()
-		ptrs, err := net.LookupAddr(status.IP)
-		if err != nil || len(ptrs) == 0 {
-			status.FCrDNSStatus = "missing_ptr"
-			json.NewEncoder(w).Encode(status)
-			return
+		// Prefer IPv4 addresses first so dual-stack resolution order is deterministic.
+		orderedIPs := make([]net.IP, 0, len(ips))
+		for _, ip := range ips {
+			if ip.To4() != nil {
+				orderedIPs = append(orderedIPs, ip)
+			}
+		}
+		for _, ip := range ips {
+			if ip.To4() == nil {
+				orderedIPs = append(orderedIPs, ip)
+			}
 		}
 
-		status.PTRFound = true
-		status.PTR = strings.TrimSuffix(ptrs[0], ".")
-		if strings.EqualFold(status.PTR, smtpDomain) {
-			status.PTRMatches = true
-			status.FCrDNSStatus = "ok"
-		} else {
+		status.IP = orderedIPs[0].String()
+		var firstMismatchIP, firstMismatchPTR string
+		for _, ip := range orderedIPs {
+			ipStr := ip.String()
+			ptrs, err := net.LookupAddr(ipStr)
+			if err != nil || len(ptrs) == 0 {
+				continue
+			}
+			for _, rawPTR := range ptrs {
+				ptr := strings.TrimSuffix(rawPTR, ".")
+				if strings.EqualFold(ptr, smtpDomain) {
+					status.IP = ipStr
+					status.PTRFound = true
+					status.PTR = ptr
+					status.PTRMatches = true
+					status.FCrDNSStatus = "ok"
+					json.NewEncoder(w).Encode(status)
+					return
+				}
+				if firstMismatchPTR == "" {
+					firstMismatchIP = ipStr
+					firstMismatchPTR = ptr
+				}
+			}
+		}
+
+		if firstMismatchPTR != "" {
+			status.IP = firstMismatchIP
+			status.PTRFound = true
+			status.PTR = firstMismatchPTR
 			status.FCrDNSStatus = "mismatch"
+		} else {
+			status.FCrDNSStatus = "missing_ptr"
 		}
 
 		json.NewEncoder(w).Encode(status)

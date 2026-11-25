@@ -17,11 +17,9 @@ type Config struct {
 }
 
 func RegisterRoutes(mux *http.ServeMux, cfg Config) {
-	validDomainsFunc := func() []string {
-		if cfg.AcmeProvider != nil {
-			return cfg.AcmeProvider.Domains()
-		}
-		return nil
+	var validDomainsFunc func() []string
+	if cfg.AcmeProvider != nil {
+		validDomainsFunc = cfg.AcmeProvider.Domains
 	}
 
 	// API routes

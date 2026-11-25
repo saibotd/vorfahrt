@@ -37,20 +37,28 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	db.AutoMigrate(&models.Account{}, &models.Message{})
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(1)
+	}
+	if err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").Error; err != nil {
+		log.Printf("Warning: failed to configure SQLite pragmas: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Account{}, &models.Message{}); err != nil {
+		log.Fatalf("Failed to migrate database: %v", err)
+	}
 
 	// DKIM Key Setup
+	dkimSelector := os.Getenv("DKIM_SELECTOR")
+	if dkimSelector == "" {
+		dkimSelector = "mail"
+	}
 	dkimKeyFile := os.Getenv("DKIM_KEY_FILE")
 	if dkimKeyFile == "" {
 		dkimKeyFile = filepath.Join(dataDir, "dkim.key")
 	}
-	dkimKey, err := queue.LoadOrGenerateDKIMKey(dkimKeyFile)
+	dkimKey, err := queue.LoadOrGenerateDKIMKey(dkimKeyFile, dkimSelector)
 	if err != nil {
 		log.Println("DKIM disabled: failed to load or generate key:", err)
-	}
-	dkimSelector := os.Getenv("DKIM_SELECTOR")
-	if dkimSelector == "" {
-		dkimSelector = "mail"
 	}
 
 	smtpDomain := os.Getenv("SMTP_DOMAIN")
@@ -94,12 +102,9 @@ func main() {
 	// SMTP Server
 	be := &local_smtp.Backend{
 		DB: db,
-		ValidDomains: func() []string {
-			if tlsProv != nil {
-				return tlsProv.Domains()
-			}
-			return nil
-		},
+	}
+	if tlsProv != nil {
+		be.ValidDomains = tlsProv.Domains
 	}
 	s := smtp.NewServer(be)
 
@@ -115,7 +120,7 @@ func main() {
 	s.MaxRecipients = 50
 	s.AllowInsecureAuth = true
 
-	if tlsProv != nil && tlsProv.TLSConfig() != nil {
+	if tlsProv != nil {
 		s.TLSConfig = tlsProv.TLSConfig()
 	}
 

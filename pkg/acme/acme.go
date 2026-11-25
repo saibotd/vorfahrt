@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sync"
 	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -129,6 +131,8 @@ func (p *Provider) Reload() error {
 		return fmt.Errorf("no certificates found in %s", p.path)
 	}
 
+	sort.Strings(domains)
+
 	p.mu.Lock()
 	p.config = cfg
 	p.domains = domains
@@ -137,22 +141,39 @@ func (p *Provider) Reload() error {
 	return nil
 }
 
+// MatchDomain checks whether target matches an allowed domain pattern,
+// supporting both exact matches and single-label wildcard patterns (e.g. "*.example.com").
+func MatchDomain(pattern, target string) bool {
+	pattern = strings.TrimSpace(pattern)
+	target = strings.TrimSpace(target)
+	if pattern == "" || target == "" {
+		return false
+	}
+	if strings.EqualFold(pattern, target) {
+		return true
+	}
+	if strings.HasPrefix(pattern, "*.") {
+		base := pattern[1:] // ".example.com"
+		if len(target) > len(base) && strings.EqualFold(target[len(target)-len(base):], base) {
+			label := target[:len(target)-len(base)]
+			return label != "" && !strings.Contains(label, ".")
+		}
+	}
+	return false
+}
+
 func (p *Provider) Domains() []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	domains := make([]string, len(p.domains))
 	copy(domains, p.domains)
 	return domains
 }
 
 func (p *Provider) TLSConfig() *tls.Config {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.config == nil {
-		return nil
-	}
-	// Return a clone that points to the same certificates
+	// Always return a dynamic tls.Config so certificates loaded after startup
+	// (e.g. once Traefik populates acme.json) take effect without restarting.
 	return &tls.Config{
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			p.mu.RLock()

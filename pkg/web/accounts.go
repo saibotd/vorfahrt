@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"vorfahrt/pkg/acme"
 	"vorfahrt/pkg/models"
 
 	"gorm.io/gorm"
@@ -51,18 +52,20 @@ func handleAccounts(db *gorm.DB, validDomains func() []string) http.HandlerFunc 
 
 			if validDomains != nil {
 				domains := validDomains()
-				if len(domains) > 0 {
-					valid := false
-					for _, d := range domains {
-						if strings.EqualFold(d, domain) {
-							valid = true
-							break
-						}
+				if len(domains) == 0 {
+					http.Error(w, "No valid sender domains configured yet", http.StatusBadRequest)
+					return
+				}
+				valid := false
+				for _, d := range domains {
+					if acme.MatchDomain(d, domain) {
+						valid = true
+						break
 					}
-					if !valid {
-						http.Error(w, "Domain is not in configured sender domains", http.StatusBadRequest)
-						return
-					}
+				}
+				if !valid {
+					http.Error(w, "Domain is not in configured sender domains", http.StatusBadRequest)
+					return
 				}
 			}
 
@@ -94,12 +97,15 @@ func handleDeleteAccount(db *gorm.DB) http.HandlerFunc {
 			var req struct {
 				ID uint `json:"id"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-				db.Delete(&models.Account{}, req.ID)
-				w.WriteHeader(http.StatusOK)
-			} else {
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
 				http.Error(w, "Invalid request", http.StatusBadRequest)
+				return
 			}
+			if err := db.Delete(&models.Account{}, req.ID).Error; err != nil {
+				http.Error(w, "Failed to delete account", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}

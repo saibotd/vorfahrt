@@ -1,11 +1,22 @@
 package queue
 
 import (
+	"bufio"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/textproto"
+	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +46,10 @@ func TestParseRetention(t *testing.T) {
 		{"false", 0, false},
 		{"-5h", 0, true},
 		{"invalid", 0, true},
+		{"2w", 0, true},
+		{"5days", 0, true},
+		{"1.5d", 0, true},
+		{"10abc", 0, true},
 	}
 
 	for _, tt := range tests {
@@ -122,7 +137,10 @@ func TestIsFatalError(t *testing.T) {
 		{"string with 550", errors.New("smtp: 550 mailbox not found"), true},
 		{"string 451 prefix", errors.New("451 4.7.1 Greylisted, please try again"), false},
 		{"string 421 prefix", errors.New("421 server busy"), false},
+		{"string 451 containing 500", errors.New("451 Too many messages (limit 500 per hour)"), false},
+		{"timeout containing 500", errors.New("timeout after 500 ms"), false},
 		{"invalid recipient address", errors.New("invalid recipient address"), true},
+		{"null mx error", errors.New("domain does not accept mail (Null MX)"), true},
 		{"DNS not found", &net.DNSError{IsNotFound: true, Err: "no such host"}, true},
 		{"DNS no such host string", &net.DNSError{Err: "no such host"}, true},
 		{"DNS timeout", &net.DNSError{IsTimeout: true, Err: "i/o timeout"}, false},
@@ -430,5 +448,188 @@ func TestQueueSuccessClearsDataAndNextRetry(t *testing.T) {
 	}
 	if updated.Error != "" {
 		t.Errorf("Expected Error to be empty, got %q", updated.Error)
+	}
+}
+
+func TestQueueNullMXFatalNoDeliver(t *testing.T) {
+	db := setupTestDB(t)
+	msg := models.Message{
+		From:    "sender@example.com",
+		To:      "user@nullmx.example",
+		Subject: "Null MX",
+		Data:    []byte("Subject: Null MX\r\n\r\nHi"),
+		Status:  "queued",
+	}
+	db.Create(&msg)
+
+	deliverCalls := 0
+	worker := &Worker{
+		DB: db,
+		LookupMX: func(domain string) ([]*net.MX, error) {
+			return []*net.MX{{Host: ".", Pref: 0}}, nil
+		},
+		DeliverFunc: func(addr, from, to string, data []byte) error {
+			deliverCalls++
+			return nil
+		},
+	}
+
+	worker.ProcessOnce()
+
+	var updated models.Message
+	db.First(&updated, msg.ID)
+	if updated.Status != "failed" {
+		t.Errorf("expected status 'failed' for Null MX, got %q", updated.Status)
+	}
+	if deliverCalls != 0 {
+		t.Errorf("expected 0 delivery attempts for Null MX, got %d", deliverCalls)
+	}
+}
+
+func TestQueueTempMXLookupErrorRetries(t *testing.T) {
+	db := setupTestDB(t)
+	msg := models.Message{
+		From:    "sender@example.com",
+		To:      "user@tempfail.example",
+		Subject: "Temp MX",
+		Data:    []byte("Subject: Temp MX\r\n\r\nHi"),
+		Status:  "queued",
+	}
+	db.Create(&msg)
+
+	deliverCalls := 0
+	worker := &Worker{
+		DB: db,
+		LookupMX: func(domain string) ([]*net.MX, error) {
+			return nil, &net.DNSError{IsTimeout: true, Err: "i/o timeout"}
+		},
+		DeliverFunc: func(addr, from, to string, data []byte) error {
+			deliverCalls++
+			return nil
+		},
+	}
+
+	worker.ProcessOnce()
+
+	var updated models.Message
+	db.First(&updated, msg.ID)
+	if updated.Status != "queued" {
+		t.Errorf("expected status 'queued' on temporary MX timeout, got %q", updated.Status)
+	}
+	if deliverCalls != 0 {
+		t.Errorf("expected 0 direct A-record fallback deliveries on MX timeout, got %d", deliverCalls)
+	}
+}
+
+func TestLoadOrGenerateDKIMKeyPermissions(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "dkim.key")
+	key, err := LoadOrGenerateDKIMKey(keyPath, "customsel")
+	if err != nil {
+		t.Fatalf("LoadOrGenerateDKIMKey: %v", err)
+	}
+	if key == nil {
+		t.Fatal("expected non-nil RSA key")
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("expected DKIM key permissions 0600, got %04o", perm)
+	}
+}
+
+func TestDeliverToAddrIgnoresQuitDropAndRecoversSelfSignedSTARTTLS(t *testing.T) {
+	// Generate a self-signed cert for the mock MX server (fails strict verify, succeeds opportunistic TLS)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "selfsigned.mx.local"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	tlsCert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer ln.Close()
+
+	var conns atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conns.Add(1)
+			go func(conn net.Conn) {
+				defer conn.Close()
+				rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+				writeLine := func(s string) {
+					_, _ = rw.WriteString(s + "\r\n")
+					_ = rw.Flush()
+				}
+				writeLine("220 mock.mx.local ESMTP")
+				for {
+					line, err := rw.ReadString('\n')
+					if err != nil {
+						return
+					}
+					cmd := strings.ToUpper(strings.TrimSpace(line))
+					switch {
+					case strings.HasPrefix(cmd, "EHLO"):
+						writeLine("250-mock.mx.local")
+						writeLine("250 STARTTLS")
+					case cmd == "STARTTLS":
+						writeLine("220 Ready to start TLS")
+						tlsConn := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{tlsCert}})
+						if err := tlsConn.Handshake(); err != nil {
+							return
+						}
+						conn = tlsConn
+						rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+					case strings.HasPrefix(cmd, "MAIL FROM:"):
+						writeLine("250 OK")
+					case strings.HasPrefix(cmd, "RCPT TO:"):
+						writeLine("250 OK")
+					case cmd == "DATA":
+						writeLine("354 End data with <CR><LF>.<CR><LF>")
+						for {
+							dline, err := rw.ReadString('\n')
+							if err != nil {
+								return
+							}
+							if dline == ".\r\n" || dline == ".\n" {
+								break
+							}
+						}
+						writeLine("250 OK queued")
+						// Simulate a remote server closing immediately before QUIT
+						return
+					default:
+						writeLine("250 OK")
+					}
+				}
+			}(c)
+		}
+	}()
+
+	worker := &Worker{SMTPDomain: "mail.example.com"}
+	if err := worker.deliverToAddr(ln.Addr().String(), "sender@example.com", "rcpt@dest.com", []byte("Subject: Hi\r\n\r\nBody")); err != nil {
+		t.Fatalf("expected delivery to succeed with opportunistic STARTTLS and abrupt post-DATA close, got: %v", err)
+	}
+	if conns.Load() != 2 {
+		t.Errorf("expected 2 connections (strict TLS attempt + clean reconnect), got %d", conns.Load())
 	}
 }
